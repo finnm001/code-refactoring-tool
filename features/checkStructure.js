@@ -23,7 +23,7 @@ async function runStructureCheck() {
   }
 
   const code = document.getText();
-  const lines = code.split("\n").length; // Get the number of lines
+  const lines = code.split("\n").length;
 
   let ast;
   try {
@@ -120,6 +120,76 @@ function checkCodeDuplication(code) {
   return duplicates;
 }
 
+// Detect dead code such as unused variables/functions
+function checkDeadCode(ast) {
+  let unusedVariables = []; // This will store all variables initially
+  let unusedFunctions = [];
+
+  // Sets to track variable accesses and function calls
+  const variableDeclarations = new Set();
+  const variableAccesses = new Set();
+  const functionDeclarations = new Set();
+  const functionCalls = new Set();
+
+  // Traverse AST for variable declarations and accesses
+  traverse(ast, {
+    VariableDeclarator(path) {
+      const variableName = path.node.id.name;
+
+      // Add variable to the set of declared variables
+      variableDeclarations.add(variableName);
+    },
+    FunctionDeclaration(path) {
+      const functionName = path.node.id.name;
+
+      // Add function to the set of declared functions
+      functionDeclarations.add(functionName);
+
+      // Check if the function is called somewhere in the code
+      traverse(ast, {
+        CallExpression(callPath) {
+          if (callPath.node.callee.name === functionName) {
+            functionCalls.add(functionName); // Function is called
+          }
+        },
+      });
+    },
+    // Track variable accesses in identifiers
+    Identifier(path) {
+      const variableName = path.node.name;
+
+      // Ensure that we are tracking variables only when they are accessed (not during declaration)
+      if (
+        path.scope.hasBinding(variableName) &&
+        !variableDeclarations.has(variableName)
+      ) {
+        variableAccesses.add(variableName); // Track variable as accessed
+      }
+    },
+    // Track function calls such as `console.log`
+    CallExpression(path) {
+      // Ensure that we are not just calling the function itself, but also tracking its arguments
+      path.node.arguments.forEach((arg) => {
+        if (arg.type === "Identifier" && path.scope.hasBinding(arg.name)) {
+          variableAccesses.add(arg.name); // Track variable used in function call (like console.log)
+        }
+      });
+    },
+  });
+
+  // Now filter out accessed variables from unusedVariables
+  unusedVariables = [...variableDeclarations].filter(
+    (variable) => !variableAccesses.has(variable)
+  );
+
+  // Identify unused functions (functions that were declared but never called)
+  unusedFunctions = [...functionDeclarations].filter(
+    (func) => !functionCalls.has(func)
+  );
+
+  return { unusedVariables, unusedFunctions };
+}
+
 // Analysing the code structure
 function analyseCodeStructure(ast, code, lines) {
   let topLevelFunctions = 0;
@@ -127,9 +197,16 @@ function analyseCodeStructure(ast, code, lines) {
   let largeFunctions = [];
   let undocumented = [];
   let duplicateCode = [];
+  let deadCode = {
+    unusedVariables: [],
+    unusedFunctions: [],
+  };
 
   // Detect code duplication
   duplicateCode = checkCodeDuplication(code);
+
+  // Detect dead code
+  deadCode = checkDeadCode(ast);
 
   // Traverse AST to gather function details
   traverse(ast, {
@@ -171,9 +248,11 @@ function analyseCodeStructure(ast, code, lines) {
       largeFunctions,
       undocumented,
       duplicateCode,
+      deadCode,
       lines
     ),
-    duplicateCode, // Include code duplication results
+    duplicateCode,
+    deadCode,
     undocumented,
     largeFunctions,
   };
@@ -228,6 +307,7 @@ function calculateHealthScore(
   largeFunctions,
   undocumented,
   duplicateCode,
+  deadCode,
   lines
 ) {
   const sizeFactor = Math.floor(lines / 1000);
@@ -235,16 +315,23 @@ function calculateHealthScore(
   const maxTopLevelFunctions = Math.min(30, 10 + sizeFactor);
   const maxLargeFunctions = Math.min(15, 5 + sizeFactor);
   const maxUndocumented = Math.min(15, sizeFactor + 2);
+  const deadCodeInstances =
+    deadCode.unusedVariables.length + deadCode.unusedFunctions.length;
 
   const topLevelFunctionIssue =
     topLevelFunctions > maxTopLevelFunctions ? 1 : 0;
   const largeFunctionIssue = largeFunctions.length > maxLargeFunctions ? 1 : 0;
   const undocumentedIssue = undocumented.length > maxUndocumented ? 1 : 0;
-
-  const duplicationPenalty = duplicateCode.length > 0 ? 1 : 0; // Add penalty for code duplication
+  const duplicationPenalty = duplicateCode.length > 0 ? 1 : 0;
+  const deadCodePenalty = Math.floor(deadCodeInstances / 2);
 
   const issueCount =
-    topLevelFunctionIssue + largeFunctionIssue + undocumentedIssue + duplicationPenalty;
+    topLevelFunctionIssue +
+    largeFunctionIssue +
+    undocumentedIssue +
+    duplicationPenalty +
+    deadCodePenalty;
+
   const penalty = Math.max(0, 100 - issueCount * 15);
 
   return penalty;
@@ -258,6 +345,7 @@ function generateMarkdownReport(fileUri, analysisResults, lines) {
     commentDensity,
     penalty,
     duplicateCode,
+    deadCode,
     undocumented,
     largeFunctions,
   } = analysisResults;
@@ -283,6 +371,17 @@ function generateMarkdownReport(fileUri, analysisResults, lines) {
       .join("\n\n");
   }
 
+  // Add dead code section to the markdown report
+  let deadCodeText = "No dead code found";
+  if (
+    deadCode.unusedVariables.length > 0 ||
+    deadCode.unusedFunctions.length > 0
+  ) {
+    deadCodeText = `
+    **Unused Variables:** ${deadCode.unusedVariables.join(", ") || "None"}
+    **Unused Functions:** ${deadCode.unusedFunctions.join(", ") || "None"}`;
+  }
+
   return `# Structure Report: ${path.basename(fileUri.fsPath)}
 
 ## File Summary
@@ -297,6 +396,9 @@ function generateMarkdownReport(fileUri, analysisResults, lines) {
 
 ## Code Duplication
 ${duplicationText}
+
+## Dead Code
+${deadCodeText}
 
 ## Undocumented Functions
 ${
@@ -326,7 +428,7 @@ function createWebviewPanel(fileUri, markdownReport, analysisResults, lines) {
     { enableScripts: true }
   );
 
-  const { longestFn, undocumented, largeFunctions, duplicateCode } =
+  const { longestFn, undocumented, largeFunctions, duplicateCode, deadCode } =
     analysisResults;
 
   panel.webview.html = `
@@ -396,6 +498,24 @@ function createWebviewPanel(fileUri, markdownReport, analysisResults, lines) {
               )
               .join("")
           : "<li>No duplicate code found</li>"
+      }
+    </ul>
+
+    <h2>Dead Code</h2>
+    <ul>
+      ${
+        deadCode.unusedVariables.length > 0
+          ? `<li><strong>Unused Variables:</strong> ${deadCode.unusedVariables.join(
+              ", "
+            )}</li>`
+          : "<li>No unused variables found</li>"
+      }
+      ${
+        deadCode.unusedFunctions.length > 0
+          ? `<li><strong>Unused Functions:</strong> ${deadCode.unusedFunctions.join(
+              ", "
+            )}</li>`
+          : "<li>No unused functions found</li>"
       }
     </ul>
 
