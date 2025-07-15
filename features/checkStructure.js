@@ -114,10 +114,11 @@ function analyseCodeStructure(ast, code, lines) {
     longestFn,
     avgFnLength,
     commentDensity,
-    healthScore: calculateHealthScore(
+    penalty: calculateHealthScore(
       topLevelFunctions,
       largeFunctions,
-      undocumented
+      undocumented,
+      lines
     ),
     undocumented,
     largeFunctions,
@@ -167,13 +168,35 @@ function calculateCommentDensity(code, lines) {
   return ((commentLines / lines) * 100).toFixed(1);
 }
 
-// Calculate health score
-function calculateHealthScore(topLevelFunctions, largeFunctions, undocumented) {
+// Calculate health score with dynamic thresholds based on codebase size
+function calculateHealthScore(
+  topLevelFunctions,
+  largeFunctions,
+  undocumented,
+  lines
+) {
+  // Base scaling factor for small codebases, increasing leniency as lines decrease
+  const sizeFactor = Math.floor(lines / 1000);
+
+  // Adjust thresholds based on the number of lines in the codebase
+  const maxTopLevelFunctions = Math.min(30, 10 + sizeFactor); // Allow more functions for larger codebases
+  const maxLargeFunctions = Math.min(15, 5 + sizeFactor); // Larger functions threshold adjusted
+  const maxUndocumented = Math.min(15, sizeFactor + 2); // Allow more undocumented functions for larger files
+
+  // Calculate issues based on the thresholds
+  const topLevelFunctionIssue =
+    topLevelFunctions > maxTopLevelFunctions ? 1 : 0;
+  const largeFunctionIssue = largeFunctions.length > maxLargeFunctions ? 1 : 0;
+  const undocumentedIssue = undocumented.length > maxUndocumented ? 1 : 0;
+
+  // Calculate issue count
   const issueCount =
-    (topLevelFunctions > 3 ? 1 : 0) +
-    (largeFunctions.length > 0 ? 1 : 0) +
-    (undocumented.length > 0 ? 1 : 0);
-  return Math.max(0, 100 - (issueCount / 5) * 100);
+    topLevelFunctionIssue + largeFunctionIssue + undocumentedIssue;
+
+  // Adjusting the penalty: Larger files incur more severe penalties, but not too much for small codebases
+  const penalty = Math.max(0, 100 - issueCount * 15); // Lower penalty for small codebases
+
+  return penalty;
 }
 
 // Generate markdown report from analysis results
@@ -182,7 +205,7 @@ function generateMarkdownReport(fileUri, analysisResults, lines) {
     longestFn,
     avgFnLength,
     commentDensity,
-    healthScore,
+    penalty,
     undocumented,
     largeFunctions,
   } = analysisResults;
@@ -204,7 +227,7 @@ function generateMarkdownReport(fileUri, analysisResults, lines) {
 - **Comment Density:** ${commentDensity}%
 
 ## Health Score
-**${healthScore}%**
+**${penalty}%**
 
 ## Undocumented Functions
 ${
@@ -251,9 +274,9 @@ function createWebviewPanel(fileUri, markdownReport, analysisResults, lines) {
       h1, h2 { color: #eaeaea; }
       ul { padding-left: 2rem; }
       .score { font-size: 2rem; font-weight: bold; color: ${
-        analysisResults.healthScore >= 80
+        analysisResults.penalty >= 80
           ? "#4CAF50"
-          : analysisResults.healthScore >= 50
+          : analysisResults.penalty >= 50
           ? "#FFC107"
           : "#F44336"
       }; }
@@ -288,7 +311,7 @@ function createWebviewPanel(fileUri, markdownReport, analysisResults, lines) {
     </ul>
 
     <h2>Health Score</h2>
-    <div class="score">${analysisResults.healthScore}%</div>
+    <div class="score">${analysisResults.penalty}%</div>
 
     <details open>
       <summary><strong>Undocumented Functions</strong> (${
