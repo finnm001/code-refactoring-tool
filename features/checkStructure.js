@@ -4,19 +4,16 @@ const traverse = require("@babel/traverse").default;
 const fs = require("fs");
 const path = require("path");
 
+// Main function to analyse the structure
 async function runStructureCheck() {
   const editor = vscode.window.activeTextEditor;
-  if (!editor) {
-    return vscode.window.showWarningMessage("❌ No active file");
-  }
+  if (!editor) return vscode.window.showWarningMessage("❌ No active file");
 
   const document = editor.document;
   const fileUri = document.uri;
 
-  // Ensure file is saved
-  if (document.isUntitled) {
+  if (document.isUntitled)
     return vscode.window.showErrorMessage("❌ Please save the file first.");
-  }
 
   if (document.isDirty) {
     const save = await promptSaveChanges(document);
@@ -26,9 +23,8 @@ async function runStructureCheck() {
 
   const code = document.getText();
   const lines = code.split("\n").length; // Get the number of lines
-  let ast;
 
-  // Parse the code into AST
+  let ast;
   try {
     ast = parseCodeToAST(code);
   } catch (err) {
@@ -36,23 +32,18 @@ async function runStructureCheck() {
   }
 
   const analysisResults = analyseCodeStructure(ast, code, lines);
-
-  // Generate the markdown report
   const markdownReport = generateMarkdownReport(
     fileUri,
     analysisResults,
-    lines,
-    document
+    lines
   );
 
-  // Create and display the report
   const panel = createWebviewPanel(
     fileUri,
     markdownReport,
     analysisResults,
     lines
   );
-
   handlePanelMessages(
     panel,
     document,
@@ -83,7 +74,7 @@ function parseCodeToAST(code) {
   });
 }
 
-// Helper function to analyse code structure
+// Analysing the code structure
 function analyseCodeStructure(ast, code, lines) {
   let topLevelFunctions = 0;
   let allFunctions = [];
@@ -114,10 +105,7 @@ function analyseCodeStructure(ast, code, lines) {
     },
   });
 
-  const longestFn = allFunctions.reduce(
-    (maxFn, fn) => (fn.lines > maxFn.lines ? fn : maxFn),
-    allFunctions[0]
-  );
+  const longestFn = getLongestFunction(allFunctions);
   const avgFnLength = calculateAverageFunctionLength(allFunctions);
   const commentDensity = calculateCommentDensity(code, lines);
 
@@ -136,7 +124,7 @@ function analyseCodeStructure(ast, code, lines) {
   };
 }
 
-// Extract function details like name, size, start and end lines
+// Extract details of each function
 function extractFunctionDetails(path) {
   const start = path.node.loc.start.line;
   const end = path.node.loc.end.line;
@@ -149,6 +137,14 @@ function extractFunctionDetails(path) {
 function hasJSDoc(path) {
   const leading = path.node.leadingComments || [];
   return leading.some((c) => c.value.startsWith("*"));
+}
+
+// Get the longest function
+function getLongestFunction(functions) {
+  return functions.reduce(
+    (maxFn, fn) => (fn.lines > maxFn.lines ? fn : maxFn),
+    functions[0]
+  );
 }
 
 // Calculate average function length
@@ -181,7 +177,7 @@ function calculateHealthScore(topLevelFunctions, largeFunctions, undocumented) {
 }
 
 // Generate markdown report from analysis results
-function generateMarkdownReport(fileUri, analysisResults, lines, document) {
+function generateMarkdownReport(fileUri, analysisResults, lines) {
   const {
     longestFn,
     avgFnLength,
@@ -190,7 +186,6 @@ function generateMarkdownReport(fileUri, analysisResults, lines, document) {
     undocumented,
     largeFunctions,
   } = analysisResults;
-
   const displayDate = new Date().toLocaleString("en-GB", {
     year: "numeric",
     month: "2-digit",
@@ -199,32 +194,32 @@ function generateMarkdownReport(fileUri, analysisResults, lines, document) {
     minute: "2-digit",
   });
 
-  return `# 📁 Structure Report: ${path.basename(fileUri.fsPath)}
+  return `# Structure Report: ${path.basename(fileUri.fsPath)}
 
-## 📊 File Summary
-- 📄 Total Lines: **${lines}**
-- 🛠️ Top-Level Functions: **${analysisResults.topLevelFunctions}**
-- 📏 Longest Function: \`${longestFn.name}\` (${longestFn.lines} lines)
-- 📐 Average Function Length: **${avgFnLength}**
-- 📝 Comment Density: **${commentDensity}%**
+## File Summary
+- **Total Lines:** ${lines}
+- **Top-Level Functions:** ${analysisResults.topLevelFunctions}
+- **Longest Function:** \`${longestFn.name}\` (${longestFn.lines} lines)
+- **Average Function Length:** ${avgFnLength}
+- **Comment Density:** ${commentDensity}%
 
-## 🧮 Health Score
-✅ **${healthScore}%**
+## Health Score
+**${healthScore}%**
 
-## 📚 Undocumented Functions
+## Undocumented Functions
 ${
   undocumented.map((fn) => `- \`${fn.name}\` (line ${fn.line})`).join("\n") ||
-  "🎉 None"
+  "None"
 }
 
-## 📏 Large Functions
+## Large Functions
 ${
   largeFunctions
     .map(
       (fn) =>
         `- \`${fn.name}\` (${fn.lines} lines, lines ${fn.lineStart}-${fn.lineEnd})`
     )
-    .join("\n") || "🎉 None"
+    .join("\n") || "None"
 }
 
 🕒 Report generated on: ${displayDate}`;
@@ -239,8 +234,7 @@ function createWebviewPanel(fileUri, markdownReport, analysisResults, lines) {
     { enableScripts: true }
   );
 
-  const { longestFn, allFunctions, undocumented, largeFunctions } =
-    analysisResults;
+  const { longestFn, undocumented, largeFunctions } = analysisResults;
 
   panel.webview.html = `
   <!DOCTYPE html>
@@ -254,119 +248,70 @@ function createWebviewPanel(fileUri, markdownReport, analysisResults, lines) {
         padding: 2rem;
         font-size: 15px;
       }
-      h1, h2 {
-        color: #eaeaea;
-      }
-      ul {
-        padding-left: 2rem;
-      }
-      .score {
-        font-size: 2rem;
-        font-weight: bold;
-        color: ${
-          analysisResults.healthScore >= 80
-            ? "#4CAF50"
-            : analysisResults.healthScore >= 50
-            ? "#FFC107"
-            : "#F44336"
-        };
-      }
-      .tag {
-        background: #3c3c3c;
-        color: #ffd27f;
-        font-family: monospace;
-        padding: 2px 6px;
-        border-radius: 4px;
-      }
-      .tag-btn {
-        background: #2d2d2d;
-        color: #ffd27f;
-        font-family: monospace;
-        padding: 4px 8px;
-        border-radius: 6px;
-        border: none;
-        cursor: pointer;
-        font-size: 14px;
-      }
-      .tag-btn:hover {
-        background: #5e5e5e;
-      }
-      details {
-        margin-top: 1.5rem;
-      }
-      .controls {
-        margin-top: 2rem;
-        padding-top: 1rem;
-        border-top: 1px solid #444;
-        display: flex;
-        gap: 1rem;
-        flex-wrap: wrap;
-      }
-      .export-btn, .copy-btn {
-        font-size: 14px;
-        padding: 8px 16px;
-        border-radius: 6px;
-        border: none;
-        cursor: pointer;
-      }
-      .export-btn {
-        background: #4CAF50;
-        color: white;
-      }
-      .export-btn:hover {
-        background: #45a049;
-      }
-      .copy-btn {
-        background: #007acc;
-        color: white;
-      }
-      .copy-btn:hover {
-        background: #005fa3;
-      }
-      footer {
-        margin-top: 2rem;
-        font-size: 13px;
-        color: #888;
-        border-top: 1px solid #444;
-        padding-top: 1rem;
-      }
+      h1, h2 { color: #eaeaea; }
+      ul { padding-left: 2rem; }
+      .score { font-size: 2rem; font-weight: bold; color: ${
+        analysisResults.healthScore >= 80
+          ? "#4CAF50"
+          : analysisResults.healthScore >= 50
+          ? "#FFC107"
+          : "#F44336"
+      }; }
+      .tag-btn { background: #2d2d2d; color: #ffd27f; font-family: monospace; padding: 4px 8px; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; }
+      .tag-btn:hover { background: #5e5e5e; }
+      .controls { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #444; display: flex; gap: 1rem; flex-wrap: wrap; }
+      .export-btn, .copy-btn { font-size: 14px; padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; }
+      .export-btn { background: #4CAF50; color: white; }
+      .export-btn:hover { background: #45a049; }
+      .copy-btn { background: #007acc; color: white; }
+      .copy-btn:hover { background: #005fa3; }
+      footer { margin-top: 2rem; font-size: 13px; color: #888; border-top: 1px solid #444; padding-top: 1rem; }
     </style>
   </head>
   <body>
-    <h1>📁 Structure Report: ${path.basename(fileUri.fsPath)}</h1>
-
-    <h2>📊 File Summary</h2>
+    <h1>Structure Report: ${path.basename(fileUri.fsPath)}</h1>
+    <h2>File Summary</h2>
     <ul>
-      <li>📄 Total Lines: ${lines}</li>
-      <li>🛠️ Top-Level Functions: ${analysisResults.topLevelFunctions}</li>
-      <li>📏 Longest Function: <span class="tag">${longestFn.name}</span> (${
-    longestFn.lines
-  } lines)</li>
-      <li>📐 Avg Function Length: ${analysisResults.avgFnLength}</li>
-      <li>📝 Comment Density: ${analysisResults.commentDensity}%</li>
+      <li><strong>Total Lines:</strong> ${lines}</li>
+      <li><strong>Top-Level Functions:</strong> ${
+        analysisResults.topLevelFunctions
+      }</li>
+      <li><strong>Longest Function:</strong> <span class="tag">${
+        longestFn.name
+      }</span> (${longestFn.lines} lines)</li>
+      <li><strong>Avg Function Length:</strong> ${
+        analysisResults.avgFnLength
+      }</li>
+      <li><strong>Comment Density:</strong> ${
+        analysisResults.commentDensity
+      }%</li>
     </ul>
 
-    <h2>🧮 Health Score</h2>
+    <h2>Health Score</h2>
     <div class="score">${analysisResults.healthScore}%</div>
 
     <details open>
-      <summary>📚 Undocumented Functions (${undocumented.length})</summary>
+      <summary><strong>Undocumented Functions</strong> (${
+        undocumented.length
+      })</summary>
       <ul>${
         undocumented
           .map(
             (fn) =>
               `<li><button class="tag-btn" onclick="jumpTo(${fn.line})">➡️ ${fn.name}</button> <span>(line ${fn.line})</span></li>`
           )
-          .join("") || `<li>None</li>`
+          .join("") || "<li>None</li>"
       }</ul>
     </details>
 
     <details open>
-      <summary>📏 Large Functions (${largeFunctions.length})</summary>
+      <summary><strong>Large Functions</strong> (${
+        largeFunctions.length
+      })</summary>
       <ul>${
         largeFunctions
           .map((fn) => `<li>${fn.name} (${fn.lines} lines)</li>`)
-          .join("") || `<li>None</li>`
+          .join("") || "<li>None</li>"
       }</ul>
     </details>
 
@@ -375,18 +320,14 @@ function createWebviewPanel(fileUri, markdownReport, analysisResults, lines) {
       <button class="copy-btn" onclick="copyToClipboard()">📋 Copy to Clipboard</button>
     </div>
 
-    <footer>
-      🕒 Report generated on: ${new Date().toLocaleString("en-GB")}
-    </footer>
+    <footer>🕒 Report generated on: ${new Date().toLocaleString(
+      "en-GB"
+    )}</footer>
 
     <script>
       const vscode = acquireVsCodeApi();
-      function jumpTo(line) {
-        vscode.postMessage({ type: 'jumpToLine', line });
-      }
-      function exportReport() {
-        vscode.postMessage({ type: 'exportMarkdown' });
-      }
+      function jumpTo(line) { vscode.postMessage({ type: 'jumpToLine', line }); }
+      function exportReport() { vscode.postMessage({ type: 'exportMarkdown' }); }
       function copyToClipboard() {
         const text = document.body.innerText;
         navigator.clipboard.writeText(text).then(() => {
@@ -426,7 +367,13 @@ function handlePanelMessages(
           `${path.basename(
             fileUri.fsPath,
             path.extname(fileUri.fsPath)
-          )}-report-${new Date().toISOString().replace(/[:.]/g, "-")}.md`
+          )}-report-${new Date()
+            .toISOString()
+            .slice(0, 10)
+            .replace(/-/g, "-")}_${new Date()
+            .toISOString()
+            .slice(11, 16)
+            .replace(/:/g, "-")}.md`
         );
         fs.writeFileSync(filePath, markdownReport);
 
