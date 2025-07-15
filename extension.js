@@ -8,8 +8,8 @@ function isCamelCase(name) {
 
 function toCamelCase(name) {
   return name
-    .replace(/[_-](.)/g, (_, g) => g.toUpperCase()) // snake_case > camelCase
-    .replace(/^[A-Z]/, (c) => c.toLowerCase()); // PascalCase > camelCase
+    .replace(/[_-](.)/g, (_, g) => g.toUpperCase()) //snake_case
+    .replace(/^[A-Z]/, (c) => c.toLowerCase()); //PascalCase
 }
 
 function activate(context) {
@@ -150,68 +150,81 @@ function activate(context) {
           );
         }
 
-        const selection = await vscode.window.showQuickPick(found, {
-          title: "Select a name to refactor",
-        });
+        let currentCode = code;
 
-        if (!selection) return;
+        for (let i = 0; i < found.length; i++) {
+          const selection = found[i];
+          const updatedCode = currentCode.replace(
+            new RegExp(`\\b${selection.original}\\b`, "g"),
+            selection.suggestion
+          );
 
-        const updatedCode = code.replace(
-          new RegExp(`\\b${selection.original}\\b`, "g"),
-          selection.suggestion
-        );
+          const previewUri = vscode.Uri.parse(
+            `${scheme}:/refactor-preview/${selection.original}-to-${selection.suggestion}.js`
+          );
+          previewContent.set(previewUri.toString(), updatedCode);
 
-        const previewUri = vscode.Uri.parse(
-          `${scheme}:/refactor-preview/${selection.original}-to-${selection.suggestion}.js`
-        );
-        previewContent.set(previewUri.toString(), updatedCode);
+          await vscode.commands.executeCommand(
+            "vscode.diff",
+            fileUri,
+            previewUri,
+            `${selection.original} → ${selection.suggestion}`
+          );
 
-        await vscode.commands.executeCommand(
-          "vscode.diff",
-          fileUri,
-          previewUri,
-          `${selection.original} → ${selection.suggestion}`
-        );
+          const apply = await vscode.window.showInformationMessage(
+            `Replace all instances of "${selection.original}" with "${selection.suggestion}"?`,
+            "Apply",
+            "Cancel"
+          );
 
-        const apply = await vscode.window.showInformationMessage(
-          `Replace all instances of "${selection.original}" with "${selection.suggestion}"?`,
-          "Apply",
-          "Cancel"
-        );
-
-        if (apply === "Apply") {
-          try {
-            const edit = new vscode.WorkspaceEdit();
-            const fullRange = new vscode.Range(
-              document.positionAt(0),
-              document.positionAt(code.length)
-            );
-            edit.replace(fileUri, fullRange, updatedCode);
-            await vscode.workspace.applyEdit(edit);
-            await document.save();
-            vscode.window.showInformationMessage(
-              "✅ Changes applied and saved."
-            );
-          } catch {
-            vscode.window.showErrorMessage("❌ Failed to apply changes.");
+          if (apply === "Apply") {
+            try {
+              const edit = new vscode.WorkspaceEdit();
+              const fullRange = new vscode.Range(
+                document.positionAt(0),
+                document.positionAt(code.length)
+              );
+              edit.replace(fileUri, fullRange, updatedCode);
+              await vscode.workspace.applyEdit(edit);
+              await document.save();
+              vscode.window.showInformationMessage(
+                "✅ Changes applied and saved."
+              );
+              currentCode = updatedCode;
+            } catch {
+              vscode.window.showErrorMessage("❌ Failed to apply changes.");
+            }
           }
-        }
 
-        // Close diff tab after selection
-        const tabGroups = vscode.window.tabGroups.all;
-        for (const group of tabGroups) {
-          for (const tab of group.tabs) {
-            if (
-              tab.label.includes(
-                `${selection.original} → ${selection.suggestion}`
-              )
-            ) {
-              await vscode.window.tabGroups.close(tab);
+          // Close preview diff tab
+          const tabGroups = vscode.window.tabGroups.all;
+          for (const group of tabGroups) {
+            for (const tab of group.tabs) {
+              if (
+                tab.label.includes(
+                  `${selection.original} → ${selection.suggestion}`
+                )
+              ) {
+                await vscode.window.tabGroups.close(tab);
+              }
+            }
+          }
+
+          // Ask if user wants to continue to next suggestion
+          if (i < found.length - 1) {
+            const next = await vscode.window.showInformationMessage(
+              "Would you like to review the next suggestion?",
+              "Yes",
+              "No"
+            );
+
+            if (next !== "Yes") {
+              break;
             }
           }
         }
 
-        // Re-focus original file
+        // Refocus original file
         try {
           await vscode.window.showTextDocument(document, {
             preview: false,
@@ -219,7 +232,6 @@ function activate(context) {
           });
         } catch {}
       } else {
-        // Stub for other features
         vscode.window.showInformationMessage(
           `🚧 ${feature.label} not implemented yet.`
         );
