@@ -26,6 +26,16 @@ async function run(context) {
     return vscode.window.showErrorMessage("❌ Please save the file first.");
   }
 
+  if (document.isDirty) {
+    const save = await vscode.window.showInformationMessage(
+      "💾 This file has unsaved changes. Save before continuing?",
+      "Save and Continue",
+      "Cancel"
+    );
+    if (save !== "Save and Continue") return;
+    await document.save();
+  }
+
   const code = document.getText();
   let ast;
 
