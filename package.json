@@ -1,8 +1,28 @@
 {
+  "name": "code-refactor-tool",
+  "displayName": "PwC Code Refactor Tool",
+  "description": " A VS Code extension to help refactor code.",
+  "version": "1.0.0",
+  "main": "extension.js",
+  "scripts": {},
+  "engines": {
+    "vscode": "^1.22.0"
+  },
+  "categories": ["Other"],
+  "contributes": {
+    "commands": [
+      {
+        "command": "pwc-refactor.run",
+        "title": "🔧 PwC Refactor: Analyse JS Code"
+      }
+    ]
+  },
   "dependencies": {
     "@babel/parser": "^7.28.0",
     "@babel/traverse": "^7.28.0",
-    "puppeteer": "^24.13.0"
+    "puppeteer": "^24.13.0",
+    "vscode": "^1.1.37",
+    "crypto": "^1.0.1"
   },
   "devDependencies": {
     "@types/vscode": "^1.102.0",
