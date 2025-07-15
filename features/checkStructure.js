@@ -170,6 +170,7 @@ function analyseCodeStructure(ast, code, lines) {
       topLevelFunctions,
       largeFunctions,
       undocumented,
+      duplicateCode,
       lines
     ),
     duplicateCode, // Include code duplication results
@@ -226,6 +227,7 @@ function calculateHealthScore(
   topLevelFunctions,
   largeFunctions,
   undocumented,
+  duplicateCode,
   lines
 ) {
   const sizeFactor = Math.floor(lines / 1000);
@@ -239,8 +241,10 @@ function calculateHealthScore(
   const largeFunctionIssue = largeFunctions.length > maxLargeFunctions ? 1 : 0;
   const undocumentedIssue = undocumented.length > maxUndocumented ? 1 : 0;
 
+  const duplicationPenalty = duplicateCode.length > 0 ? 1 : 0; // Add penalty for code duplication
+
   const issueCount =
-    topLevelFunctionIssue + largeFunctionIssue + undocumentedIssue;
+    topLevelFunctionIssue + largeFunctionIssue + undocumentedIssue + duplicationPenalty;
   const penalty = Math.max(0, 100 - issueCount * 15);
 
   return penalty;
