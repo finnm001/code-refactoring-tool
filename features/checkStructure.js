@@ -5,7 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-// Main function to analyse the structure
+// Main function to run the analysis
 async function runStructureCheck() {
   const editor = vscode.window.activeTextEditor;
   if (!editor) return vscode.window.showWarningMessage("❌ No active file");
@@ -15,12 +15,13 @@ async function runStructureCheck() {
 
   if (document.isUntitled)
     return vscode.window.showErrorMessage("❌ Please save the file first.");
+  if (
+    document.isDirty &&
+    (await promptSaveChanges(document)) !== "Save and Continue"
+  )
+    return;
 
-  if (document.isDirty) {
-    const save = await promptSaveChanges(document);
-    if (save !== "Save and Continue") return;
-    await document.save();
-  }
+  await document.save();
 
   const code = document.getText();
   const lines = code.split("\n").length;
@@ -38,13 +39,13 @@ async function runStructureCheck() {
     analysisResults,
     lines
   );
-
   const panel = createWebviewPanel(
     fileUri,
     markdownReport,
     analysisResults,
     lines
   );
+
   handlePanelMessages(
     panel,
     document,
@@ -63,7 +64,7 @@ async function promptSaveChanges(document) {
   );
 }
 
-// Helper function to parse code into AST
+// Parse code into AST
 function parseCodeToAST(code) {
   return parser.parse(code, {
     sourceType: "module",
@@ -87,33 +88,60 @@ function cleanCodeBlock(codeBlock) {
   return codeBlock.replace(/\s+/g, " ").trim();
 }
 
-// Function to check for code duplication
+// Analyze the code structure
+function analyseCodeStructure(ast, code, lines) {
+  const duplicateCode = checkCodeDuplication(code);
+  const deadCode = checkDeadCode(ast);
+
+  const functionsData = analyseFunctions(ast);
+  const longestFn = getLongestFunction(functionsData.allFunctions);
+  const avgFnLength = calculateAverageFunctionLength(
+    functionsData.allFunctions
+  );
+  const commentDensity = calculateCommentDensity(code, lines);
+
+  const penalty = calculateHealthScore(
+    functionsData,
+    duplicateCode,
+    deadCode,
+    lines
+  );
+
+  return {
+    ...functionsData,
+    duplicateCode,
+    deadCode,
+    longestFn,
+    avgFnLength,
+    commentDensity,
+    penalty,
+  };
+}
+
+// Check for code duplication
 function checkCodeDuplication(code) {
-  // Split the code into lines and filter out unwanted lines (like closing braces and empty lines)
   const codeBlocks = code
     .split("\n")
     .map((line, index) => ({
-      lineNumber: index + 1, // 1-based line number
+      lineNumber: index + 1,
       code: line.trim(),
     }))
-    .filter((block) => block.code !== "}" && block.code !== ""); // Filter out closing braces and empty lines
+    .filter((block) => block.code !== "}" && block.code !== "");
 
   const hashes = {};
   const duplicates = [];
-
-  codeBlocks.forEach((block, index) => {
-    const cleanedBlock = cleanCodeBlock(block.code); // Clean whitespace and make the block uniform
+  codeBlocks.forEach((block) => {
+    const cleanedBlock = cleanCodeBlock(block.code);
     const blockHash = generateCodeHash(cleanedBlock);
 
     if (hashes[blockHash]) {
-      // Found a duplicate block
       duplicates.push({
         block: cleanedBlock,
         firstOccurrence: hashes[blockHash],
-        secondOccurrence: block.lineNumber, // The current line of the duplicate
+        secondOccurrence: block.lineNumber,
       });
     } else {
-      hashes[blockHash] = block.lineNumber; // Store the index of the first occurrence
+      hashes[blockHash] = block.lineNumber;
     }
   });
 
@@ -122,67 +150,45 @@ function checkCodeDuplication(code) {
 
 // Detect dead code such as unused variables/functions
 function checkDeadCode(ast) {
-  let unusedVariables = []; // This will store all variables initially
+  let unusedVariables = [];
   let unusedFunctions = [];
 
-  // Sets to track variable accesses and function calls
   const variableDeclarations = new Set();
   const variableAccesses = new Set();
   const functionDeclarations = new Set();
   const functionCalls = new Set();
 
-  // Traverse AST for variable declarations and accesses
   traverse(ast, {
     VariableDeclarator(path) {
       const variableName = path.node.id.name;
-
-      // Add variable to the set of declared variables
       variableDeclarations.add(variableName);
     },
     FunctionDeclaration(path) {
       const functionName = path.node.id.name;
-
-      // Add function to the set of declared functions
       functionDeclarations.add(functionName);
 
-      // Check if the function is called somewhere in the code
       traverse(ast, {
         CallExpression(callPath) {
           if (callPath.node.callee.name === functionName) {
-            functionCalls.add(functionName); // Function is called
+            functionCalls.add(functionName);
           }
         },
       });
     },
-    // Track variable accesses in identifiers
     Identifier(path) {
       const variableName = path.node.name;
-
-      // Ensure that we are tracking variables only when they are accessed (not during declaration)
       if (
         path.scope.hasBinding(variableName) &&
-        !variableDeclarations.has(variableName)
+        variableDeclarations.has(variableName)
       ) {
-        variableAccesses.add(variableName); // Track variable as accessed
+        variableAccesses.add(variableName);
       }
-    },
-    // Track function calls such as `console.log`
-    CallExpression(path) {
-      // Ensure that we are not just calling the function itself, but also tracking its arguments
-      path.node.arguments.forEach((arg) => {
-        if (arg.type === "Identifier" && path.scope.hasBinding(arg.name)) {
-          variableAccesses.add(arg.name); // Track variable used in function call (like console.log)
-        }
-      });
     },
   });
 
-  // Now filter out accessed variables from unusedVariables
   unusedVariables = [...variableDeclarations].filter(
     (variable) => !variableAccesses.has(variable)
   );
-
-  // Identify unused functions (functions that were declared but never called)
   unusedFunctions = [...functionDeclarations].filter(
     (func) => !functionCalls.has(func)
   );
@@ -190,72 +196,33 @@ function checkDeadCode(ast) {
   return { unusedVariables, unusedFunctions };
 }
 
-// Analysing the code structure
-function analyseCodeStructure(ast, code, lines) {
+// Analyze functions (for modularity and other factors)
+function analyseFunctions(ast) {
   let topLevelFunctions = 0;
   let allFunctions = [];
   let largeFunctions = [];
   let undocumented = [];
-  let duplicateCode = [];
-  let deadCode = {
-    unusedVariables: [],
-    unusedFunctions: [],
-  };
 
-  // Detect code duplication
-  duplicateCode = checkCodeDuplication(code);
-
-  // Detect dead code
-  deadCode = checkDeadCode(ast);
-
-  // Traverse AST to gather function details
   traverse(ast, {
     FunctionDeclaration(path) {
-      if (path.parent.type === "Program") {
-        topLevelFunctions++;
-      }
+      if (path.parent.type === "Program") topLevelFunctions++;
 
       const { name, size, start, end } = extractFunctionDetails(path);
       allFunctions.push({ name, lines: size, lineStart: start, lineEnd: end });
 
-      if (size > 50) {
+      if (size > 50)
         largeFunctions.push({
           name,
           lines: size,
           lineStart: start,
           lineEnd: end,
         });
-      }
 
-      if (!hasJSDoc(path)) {
-        undocumented.push({ name, line: start });
-      }
+      if (!hasJSDoc(path)) undocumented.push({ name, line: start });
     },
   });
 
-  const longestFn = getLongestFunction(allFunctions);
-  const avgFnLength = calculateAverageFunctionLength(allFunctions);
-  const commentDensity = calculateCommentDensity(code, lines);
-
-  // Return analysis results including code duplication
-  return {
-    topLevelFunctions,
-    longestFn,
-    avgFnLength,
-    commentDensity,
-    penalty: calculateHealthScore(
-      topLevelFunctions,
-      largeFunctions,
-      undocumented,
-      duplicateCode,
-      deadCode,
-      lines
-    ),
-    duplicateCode,
-    deadCode,
-    undocumented,
-    largeFunctions,
-  };
+  return { topLevelFunctions, allFunctions, largeFunctions, undocumented };
 }
 
 // Extract details of each function
@@ -267,7 +234,7 @@ function extractFunctionDetails(path) {
   return { name, size, start, end };
 }
 
-// Check if the function has JSDoc comments
+// Check if function has JSDoc comments
 function hasJSDoc(path) {
   const leading = path.node.leadingComments || [];
   return leading.some((c) => c.value.startsWith("*"));
@@ -302,28 +269,22 @@ function calculateCommentDensity(code, lines) {
 }
 
 // Calculate health score with dynamic thresholds based on codebase size
-function calculateHealthScore(
-  topLevelFunctions,
-  largeFunctions,
-  undocumented,
-  duplicateCode,
-  deadCode,
-  lines
-) {
+function calculateHealthScore(functionsData, duplicateCode, deadCode, lines) {
   const sizeFactor = Math.floor(lines / 1000);
-
   const maxTopLevelFunctions = Math.min(30, 10 + sizeFactor);
   const maxLargeFunctions = Math.min(15, 5 + sizeFactor);
   const maxUndocumented = Math.min(15, sizeFactor + 2);
-  const deadCodeInstances =
-    deadCode.unusedVariables.length + deadCode.unusedFunctions.length;
 
   const topLevelFunctionIssue =
-    topLevelFunctions > maxTopLevelFunctions ? 1 : 0;
-  const largeFunctionIssue = largeFunctions.length > maxLargeFunctions ? 1 : 0;
-  const undocumentedIssue = undocumented.length > maxUndocumented ? 1 : 0;
+    functionsData.topLevelFunctions > maxTopLevelFunctions ? 1 : 0;
+  const largeFunctionIssue =
+    functionsData.largeFunctions.length > maxLargeFunctions ? 1 : 0;
+  const undocumentedIssue =
+    functionsData.undocumented.length > maxUndocumented ? 1 : 0;
   const duplicationPenalty = duplicateCode.length > 0 ? 1 : 0;
-  const deadCodePenalty = Math.floor(deadCodeInstances / 2);
+  const deadCodePenalty = Math.floor(
+    (deadCode.unusedVariables.length + deadCode.unusedFunctions.length) / 2
+  );
 
   const issueCount =
     topLevelFunctionIssue +
@@ -331,10 +292,7 @@ function calculateHealthScore(
     undocumentedIssue +
     duplicationPenalty +
     deadCodePenalty;
-
-  const penalty = Math.max(0, 100 - issueCount * 15);
-
-  return penalty;
+  return Math.max(0, 100 - issueCount * 15);
 }
 
 // Generate markdown report from analysis results
