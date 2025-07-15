@@ -12,7 +12,7 @@
   "contributes": {
     "commands": [
       {
-        "command": "pwc-refactor.run",
+        "command": "js-refactor.run",
         "title": "🔧 PwC Refactor: Analyse JS Code"
       }
     ]
@@ -20,12 +20,6 @@
   "dependencies": {
     "@babel/parser": "^7.28.0",
     "@babel/traverse": "^7.28.0",
-    "puppeteer": "^24.13.0",
-    "vscode": "^1.1.37",
-    "crypto": "^1.0.1"
-  },
-  "devDependencies": {
-    "@types/vscode": "^1.102.0",
     "eslint": "^9.31.0",
     "vscode": "^1.1.37"
   }
