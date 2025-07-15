@@ -3,6 +3,7 @@ const parser = require("@babel/parser");
 const traverse = require("@babel/traverse").default;
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 // Main function to analyse the structure
 async function runStructureCheck() {
@@ -74,13 +75,63 @@ function parseCodeToAST(code) {
   });
 }
 
+// Function to generate a hash for a code block
+function generateCodeHash(codeBlock) {
+  const hash = crypto.createHash("sha256");
+  hash.update(codeBlock);
+  return hash.digest("hex");
+}
+
+// Function to clean a code block by removing excessive whitespace
+function cleanCodeBlock(codeBlock) {
+  return codeBlock.replace(/\s+/g, " ").trim();
+}
+
+// Function to check for code duplication
+function checkCodeDuplication(code) {
+  // Split the code into lines and filter out unwanted lines (like closing braces and empty lines)
+  const codeBlocks = code
+    .split("\n")
+    .map((line, index) => ({
+      lineNumber: index + 1, // 1-based line number
+      code: line.trim(),
+    }))
+    .filter((block) => block.code !== "}" && block.code !== ""); // Filter out closing braces and empty lines
+
+  const hashes = {};
+  const duplicates = [];
+
+  codeBlocks.forEach((block, index) => {
+    const cleanedBlock = cleanCodeBlock(block.code); // Clean whitespace and make the block uniform
+    const blockHash = generateCodeHash(cleanedBlock);
+
+    if (hashes[blockHash]) {
+      // Found a duplicate block
+      duplicates.push({
+        block: cleanedBlock,
+        firstOccurrence: hashes[blockHash],
+        secondOccurrence: block.lineNumber, // The current line of the duplicate
+      });
+    } else {
+      hashes[blockHash] = block.lineNumber; // Store the index of the first occurrence
+    }
+  });
+
+  return duplicates;
+}
+
 // Analysing the code structure
 function analyseCodeStructure(ast, code, lines) {
   let topLevelFunctions = 0;
   let allFunctions = [];
   let largeFunctions = [];
   let undocumented = [];
+  let duplicateCode = [];
 
+  // Detect code duplication
+  duplicateCode = checkCodeDuplication(code);
+
+  // Traverse AST to gather function details
   traverse(ast, {
     FunctionDeclaration(path) {
       if (path.parent.type === "Program") {
@@ -109,6 +160,7 @@ function analyseCodeStructure(ast, code, lines) {
   const avgFnLength = calculateAverageFunctionLength(allFunctions);
   const commentDensity = calculateCommentDensity(code, lines);
 
+  // Return analysis results including code duplication
   return {
     topLevelFunctions,
     longestFn,
@@ -120,6 +172,7 @@ function analyseCodeStructure(ast, code, lines) {
       undocumented,
       lines
     ),
+    duplicateCode, // Include code duplication results
     undocumented,
     largeFunctions,
   };
@@ -175,26 +228,20 @@ function calculateHealthScore(
   undocumented,
   lines
 ) {
-  // Base scaling factor for small codebases, increasing leniency as lines decrease
   const sizeFactor = Math.floor(lines / 1000);
 
-  // Adjust thresholds based on the number of lines in the codebase
-  const maxTopLevelFunctions = Math.min(30, 10 + sizeFactor); // Allow more functions for larger codebases
-  const maxLargeFunctions = Math.min(15, 5 + sizeFactor); // Larger functions threshold adjusted
-  const maxUndocumented = Math.min(15, sizeFactor + 2); // Allow more undocumented functions for larger files
+  const maxTopLevelFunctions = Math.min(30, 10 + sizeFactor);
+  const maxLargeFunctions = Math.min(15, 5 + sizeFactor);
+  const maxUndocumented = Math.min(15, sizeFactor + 2);
 
-  // Calculate issues based on the thresholds
   const topLevelFunctionIssue =
     topLevelFunctions > maxTopLevelFunctions ? 1 : 0;
   const largeFunctionIssue = largeFunctions.length > maxLargeFunctions ? 1 : 0;
   const undocumentedIssue = undocumented.length > maxUndocumented ? 1 : 0;
 
-  // Calculate issue count
   const issueCount =
     topLevelFunctionIssue + largeFunctionIssue + undocumentedIssue;
-
-  // Adjusting the penalty: Larger files incur more severe penalties, but not too much for small codebases
-  const penalty = Math.max(0, 100 - issueCount * 15); // Lower penalty for small codebases
+  const penalty = Math.max(0, 100 - issueCount * 15);
 
   return penalty;
 }
@@ -206,9 +253,11 @@ function generateMarkdownReport(fileUri, analysisResults, lines) {
     avgFnLength,
     commentDensity,
     penalty,
+    duplicateCode,
     undocumented,
     largeFunctions,
   } = analysisResults;
+
   const displayDate = new Date().toLocaleString("en-GB", {
     year: "numeric",
     month: "2-digit",
@@ -216,6 +265,19 @@ function generateMarkdownReport(fileUri, analysisResults, lines) {
     hour: "2-digit",
     minute: "2-digit",
   });
+
+  // Add code duplication section to the markdown report
+  let duplicationText = "No duplicate code found";
+  if (duplicateCode && duplicateCode.length > 0) {
+    duplicationText = duplicateCode
+      .map((dup) => {
+        return `Duplicate code found at lines ${dup.firstOccurrence} and ${dup.secondOccurrence}:
+        \`\`\`
+        ${dup.block}
+        \`\`\``;
+      })
+      .join("\n\n");
+  }
 
   return `# Structure Report: ${path.basename(fileUri.fsPath)}
 
@@ -228,6 +290,9 @@ function generateMarkdownReport(fileUri, analysisResults, lines) {
 
 ## Health Score
 **${penalty}%**
+
+## Code Duplication
+${duplicationText}
 
 ## Undocumented Functions
 ${
@@ -257,7 +322,8 @@ function createWebviewPanel(fileUri, markdownReport, analysisResults, lines) {
     { enableScripts: true }
   );
 
-  const { longestFn, undocumented, largeFunctions } = analysisResults;
+  const { longestFn, undocumented, largeFunctions, duplicateCode } =
+    analysisResults;
 
   panel.webview.html = `
   <!DOCTYPE html>
@@ -313,30 +379,38 @@ function createWebviewPanel(fileUri, markdownReport, analysisResults, lines) {
     <h2>Health Score</h2>
     <div class="score">${analysisResults.penalty}%</div>
 
-    <details open>
-      <summary><strong>Undocumented Functions</strong> (${
-        undocumented.length
-      })</summary>
-      <ul>${
-        undocumented
-          .map(
-            (fn) =>
-              `<li><button class="tag-btn" onclick="jumpTo(${fn.line})">➡️ ${fn.name}</button> <span>(line ${fn.line})</span></li>`
-          )
-          .join("") || "<li>None</li>"
-      }</ul>
-    </details>
+    <h2>Code Duplication</h2>
+    <ul>
+      ${
+        duplicateCode.length > 0
+          ? duplicateCode
+              .map(
+                (dup) =>
+                  `<li>Duplicate code found at lines ${dup.firstOccurrence} and ${dup.secondOccurrence}:
+                    <pre><code>${dup.block}</code></pre>
+                  </li>`
+              )
+              .join("")
+          : "<li>No duplicate code found</li>"
+      }
+    </ul>
 
-    <details open>
-      <summary><strong>Large Functions</strong> (${
-        largeFunctions.length
-      })</summary>
-      <ul>${
-        largeFunctions
-          .map((fn) => `<li>${fn.name} (${fn.lines} lines)</li>`)
-          .join("") || "<li>None</li>"
-      }</ul>
-    </details>
+    <h2>Undocumented Functions</h2>
+    <ul>${
+      undocumented
+        .map(
+          (fn) =>
+            `<li><button class="tag-btn" onclick="jumpTo(${fn.line})">➡️ ${fn.name}</button> <span>(line ${fn.line})</span></li>`
+        )
+        .join("") || "<li>None</li>"
+    }</ul>
+
+    <h2>Large Functions</h2>
+    <ul>${
+      largeFunctions
+        .map((fn) => `<li>${fn.name} (${fn.lines} lines)</li>`)
+        .join("") || "<li>None</li>"
+    }</ul>
 
     <div class="controls">
       <button class="export-btn" onclick="exportReport()">💾 Export as Markdown (.md)</button>
