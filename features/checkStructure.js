@@ -6,42 +6,85 @@ const path = require("path");
 
 async function runStructureCheck() {
   const editor = vscode.window.activeTextEditor;
-  if (!editor) return vscode.window.showWarningMessage("No active file");
+  if (!editor) {
+    return vscode.window.showWarningMessage("❌ No active file");
+  }
 
   const document = editor.document;
   const fileUri = document.uri;
 
+  // Ensure file is saved
   if (document.isUntitled) {
     return vscode.window.showErrorMessage("❌ Please save the file first.");
   }
 
   if (document.isDirty) {
-    const save = await vscode.window.showInformationMessage(
-      "💾 Unsaved changes detected. Save before analysing?",
-      "Save and Continue",
-      "Cancel"
-    );
+    const save = await promptSaveChanges(document);
     if (save !== "Save and Continue") return;
     await document.save();
   }
 
   const code = document.getText();
-  const lines = code.split("\n").length;
+  const lines = code.split("\n").length; // Get the number of lines
   let ast;
 
+  // Parse the code into AST
   try {
-    ast = parser.parse(code, {
-      sourceType: "module",
-      plugins: ["jsx", "typescript"],
-      ranges: true,
-      tokens: true,
-      errorRecovery: true,
-      attachComment: true,
-    });
+    ast = parseCodeToAST(code);
   } catch (err) {
     return vscode.window.showErrorMessage("❌ Could not parse JS file.");
   }
 
+  const analysisResults = analyseCodeStructure(ast, code, lines);
+
+  // Generate the markdown report
+  const markdownReport = generateMarkdownReport(
+    fileUri,
+    analysisResults,
+    lines,
+    document
+  );
+
+  // Create and display the report
+  const panel = createWebviewPanel(
+    fileUri,
+    markdownReport,
+    analysisResults,
+    lines
+  );
+
+  handlePanelMessages(
+    panel,
+    document,
+    fileUri,
+    markdownReport,
+    analysisResults
+  );
+}
+
+// Helper function to prompt user to save changes
+async function promptSaveChanges(document) {
+  return await vscode.window.showInformationMessage(
+    "💾 Unsaved changes detected. Save before analysing?",
+    "Save and Continue",
+    "Cancel"
+  );
+}
+
+// Helper function to parse code into AST
+function parseCodeToAST(code) {
+  return parser.parse(code, {
+    sourceType: "module",
+    plugins: ["jsx", "typescript"],
+    ranges: true,
+    tokens: true,
+    errorRecovery: true,
+    attachComment: true,
+  });
+}
+
+// Helper function to analyse code structure
+function analyseCodeStructure(ast, code, lines) {
   let topLevelFunctions = 0;
   let allFunctions = [];
   let largeFunctions = [];
@@ -53,11 +96,7 @@ async function runStructureCheck() {
         topLevelFunctions++;
       }
 
-      const start = path.node.loc.start.line;
-      const end = path.node.loc.end.line;
-      const size = end - start;
-      const name = path.node.id?.name || "anonymous function";
-
+      const { name, size, start, end } = extractFunctionDetails(path);
       allFunctions.push({ name, lines: size, lineStart: start, lineEnd: end });
 
       if (size > 50) {
@@ -69,19 +108,58 @@ async function runStructureCheck() {
         });
       }
 
-      const leading = path.node.leadingComments || [];
-      const hasJSDoc = leading.some((c) => c.value.startsWith("*"));
-      if (!hasJSDoc) {
+      if (!hasJSDoc(path)) {
         undocumented.push({ name, line: start });
       }
     },
   });
 
-  const longestFn = allFunctions.sort((a, b) => b.lines - a.lines)[0];
-  const avgFnLength = (
-    allFunctions.reduce((sum, fn) => sum + fn.lines, 0) / allFunctions.length
-  ).toFixed(1);
+  const longestFn = allFunctions.reduce(
+    (maxFn, fn) => (fn.lines > maxFn.lines ? fn : maxFn),
+    allFunctions[0]
+  );
+  const avgFnLength = calculateAverageFunctionLength(allFunctions);
+  const commentDensity = calculateCommentDensity(code, lines);
 
+  return {
+    topLevelFunctions,
+    longestFn,
+    avgFnLength,
+    commentDensity,
+    healthScore: calculateHealthScore(
+      topLevelFunctions,
+      largeFunctions,
+      undocumented
+    ),
+    undocumented,
+    largeFunctions,
+  };
+}
+
+// Extract function details like name, size, start and end lines
+function extractFunctionDetails(path) {
+  const start = path.node.loc.start.line;
+  const end = path.node.loc.end.line;
+  const size = end - start;
+  const name = path.node.id?.name || "anonymous function";
+  return { name, size, start, end };
+}
+
+// Check if the function has JSDoc comments
+function hasJSDoc(path) {
+  const leading = path.node.leadingComments || [];
+  return leading.some((c) => c.value.startsWith("*"));
+}
+
+// Calculate average function length
+function calculateAverageFunctionLength(functions) {
+  return (
+    functions.reduce((sum, fn) => sum + fn.lines, 0) / functions.length
+  ).toFixed(1);
+}
+
+// Calculate comment density
+function calculateCommentDensity(code, lines) {
   const commentLines = code
     .split("\n")
     .filter(
@@ -90,18 +168,30 @@ async function runStructureCheck() {
         l.trim().startsWith("/*") ||
         l.trim().startsWith("*")
     ).length;
-  const commentDensity = ((commentLines / lines) * 100).toFixed(1);
+  return ((commentLines / lines) * 100).toFixed(1);
+}
 
+// Calculate health score
+function calculateHealthScore(topLevelFunctions, largeFunctions, undocumented) {
   const issueCount =
     (topLevelFunctions > 3 ? 1 : 0) +
     (largeFunctions.length > 0 ? 1 : 0) +
     (undocumented.length > 0 ? 1 : 0);
-  const healthScore = Math.max(0, 100 - (issueCount / 5) * 100);
+  return Math.max(0, 100 - (issueCount / 5) * 100);
+}
 
-  const fileName = path.basename(fileUri.fsPath);
-  const baseName = path.basename(fileUri.fsPath, path.extname(fileUri.fsPath));
-  const now = new Date();
-  const displayDate = now.toLocaleString("en-GB", {
+// Generate markdown report from analysis results
+function generateMarkdownReport(fileUri, analysisResults, lines, document) {
+  const {
+    longestFn,
+    avgFnLength,
+    commentDensity,
+    healthScore,
+    undocumented,
+    largeFunctions,
+  } = analysisResults;
+
+  const displayDate = new Date().toLocaleString("en-GB", {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -109,18 +199,11 @@ async function runStructureCheck() {
     minute: "2-digit",
   });
 
-  const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(
-    2,
-    "0"
-  )}-${String(now.getDate()).padStart(2, "0")}_${String(
-    now.getHours()
-  ).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}`;
-
-  const markdownReport = `# 📁 Structure Report: ${fileName}
+  return `# 📁 Structure Report: ${path.basename(fileUri.fsPath)}
 
 ## 📊 File Summary
 - 📄 Total Lines: **${lines}**
-- 🛠️ Top-Level Functions: **${topLevelFunctions}**
+- 🛠️ Top-Level Functions: **${analysisResults.topLevelFunctions}**
 - 📏 Longest Function: \`${longestFn.name}\` (${longestFn.lines} lines)
 - 📐 Average Function Length: **${avgFnLength}**
 - 📝 Comment Density: **${commentDensity}%**
@@ -144,29 +227,20 @@ ${
     .join("\n") || "🎉 None"
 }
 
-🕒 Report generated on: ${displayDate}
-`;
+🕒 Report generated on: ${displayDate}`;
+}
 
-  const undocumentedHtml = undocumented
-    .map(
-      (fn) =>
-        `<li><button class="tag-btn" onclick="jumpTo(${fn.line})">➡️ ${fn.name}</button> <span>(line ${fn.line})</span></li>`
-    )
-    .join("");
-
-  const largeFnsHtml = largeFunctions
-    .map(
-      (fn) =>
-        `<li><span class="tag">${fn.name}</span> (${fn.lines} lines, lines ${fn.lineStart}-${fn.lineEnd})</li>`
-    )
-    .join("");
-
+// Create Webview panel for report display
+function createWebviewPanel(fileUri, markdownReport, analysisResults, lines) {
   const panel = vscode.window.createWebviewPanel(
     "structureReport",
-    `Structure Report: ${fileName}`,
+    `Structure Report: ${path.basename(fileUri.fsPath)}`,
     vscode.ViewColumn.Beside,
     { enableScripts: true }
   );
+
+  const { longestFn, allFunctions, undocumented, largeFunctions } =
+    analysisResults;
 
   panel.webview.html = `
   <!DOCTYPE html>
@@ -190,9 +264,9 @@ ${
         font-size: 2rem;
         font-weight: bold;
         color: ${
-          healthScore >= 80
+          analysisResults.healthScore >= 80
             ? "#4CAF50"
-            : healthScore >= 50
+            : analysisResults.healthScore >= 50
             ? "#FFC107"
             : "#F44336"
         };
@@ -259,30 +333,41 @@ ${
     </style>
   </head>
   <body>
-    <h1>📁 Structure Report: ${fileName}</h1>
+    <h1>📁 Structure Report: ${path.basename(fileUri.fsPath)}</h1>
 
     <h2>📊 File Summary</h2>
     <ul>
       <li>📄 Total Lines: ${lines}</li>
-      <li>🛠️ Top-Level Functions: ${topLevelFunctions}</li>
+      <li>🛠️ Top-Level Functions: ${analysisResults.topLevelFunctions}</li>
       <li>📏 Longest Function: <span class="tag">${longestFn.name}</span> (${
     longestFn.lines
   } lines)</li>
-      <li>📐 Avg Function Length: ${avgFnLength}</li>
-      <li>📝 Comment Density: ${commentDensity}%</li>
+      <li>📐 Avg Function Length: ${analysisResults.avgFnLength}</li>
+      <li>📝 Comment Density: ${analysisResults.commentDensity}%</li>
     </ul>
 
     <h2>🧮 Health Score</h2>
-    <div class="score">${healthScore}%</div>
+    <div class="score">${analysisResults.healthScore}%</div>
 
     <details open>
       <summary>📚 Undocumented Functions (${undocumented.length})</summary>
-      <ul>${undocumentedHtml || "<li>🎉 None</li>"}</ul>
+      <ul>${
+        undocumented
+          .map(
+            (fn) =>
+              `<li><button class="tag-btn" onclick="jumpTo(${fn.line})">➡️ ${fn.name}</button> <span>(line ${fn.line})</span></li>`
+          )
+          .join("") || `<li>None</li>`
+      }</ul>
     </details>
 
     <details open>
       <summary>📏 Large Functions (${largeFunctions.length})</summary>
-      <ul>${largeFnsHtml || "<li>🎉 None</li>"}</ul>
+      <ul>${
+        largeFunctions
+          .map((fn) => `<li>${fn.name} (${fn.lines} lines)</li>`)
+          .join("") || `<li>None</li>`
+      }</ul>
     </details>
 
     <div class="controls">
@@ -291,7 +376,7 @@ ${
     </div>
 
     <footer>
-      🕒 Report generated on: ${displayDate}
+      🕒 Report generated on: ${new Date().toLocaleString("en-GB")}
     </footer>
 
     <script>
@@ -312,6 +397,17 @@ ${
   </body>
   </html>`;
 
+  return panel;
+}
+
+// Handle messages from the webview panel
+function handlePanelMessages(
+  panel,
+  document,
+  fileUri,
+  markdownReport,
+  analysisResults
+) {
   panel.webview.onDidReceiveMessage(
     async (message) => {
       if (message.type === "jumpToLine") {
@@ -324,11 +420,16 @@ ${
           "structure-reports"
         );
         if (!fs.existsSync(folder)) fs.mkdirSync(folder);
+
         const filePath = path.join(
           folder,
-          `${baseName}-report-${timestamp}.md`
+          `${path.basename(
+            fileUri.fsPath,
+            path.extname(fileUri.fsPath)
+          )}-report-${new Date().toISOString().replace(/[:.]/g, "-")}.md`
         );
         fs.writeFileSync(filePath, markdownReport);
+
         vscode.window.showInformationMessage(
           `📄 Markdown report saved as ${path.basename(filePath)}`
         );
@@ -341,6 +442,4 @@ ${
   );
 }
 
-module.exports = {
-  run: runStructureCheck,
-};
+module.exports = { run: runStructureCheck };
