@@ -21,10 +21,6 @@ function activate(context) {
             label: "🧪 Lint for Errors",
             description: "Find syntax issues using ESLint",
           },
-          {
-            label: "📝 Create Report",
-            description: "Generate README with detected issues and suggestions",
-          },
         ],
         {
           title: "PwC JS Refactor Tool",
