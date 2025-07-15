@@ -90,28 +90,21 @@ function cleanCodeBlock(codeBlock) {
 
 // Analyze the code structure
 function analyseCodeStructure(ast, code, lines) {
-  const duplicateCode = checkCodeDuplication(code);
   const deadCode = checkDeadCode(ast);
+  const refactorOpportunities = checkRefactoringOpportunities(ast, code);
 
   const functionsData = analyseFunctions(ast);
-  const longestFn = getLongestFunction(functionsData.allFunctions);
   const avgFnLength = calculateAverageFunctionLength(
     functionsData.allFunctions
   );
   const commentDensity = calculateCommentDensity(code, lines);
 
-  const penalty = calculateHealthScore(
-    functionsData,
-    duplicateCode,
-    deadCode,
-    lines
-  );
+  const penalty = calculateHealthScore(functionsData, deadCode, lines);
 
   return {
     ...functionsData,
-    duplicateCode,
     deadCode,
-    longestFn,
+    refactorOpportunities,
     avgFnLength,
     commentDensity,
     penalty,
@@ -196,6 +189,41 @@ function checkDeadCode(ast) {
   return { unusedVariables, unusedFunctions };
 }
 
+function checkRefactoringOpportunities(ast, code) {
+  let longFunctions = [];
+  let complexConditionals = [];
+  let duplicatedCode = [];
+
+  // Check for long functions (greater than 50 lines)
+  traverse(ast, {
+    FunctionDeclaration(path) {
+      const { name, size } = extractFunctionDetails(path);
+      if (size > 50) {
+        // Mark functions that are too long
+        longFunctions.push({ name, lines: size });
+      }
+    },
+    IfStatement(path) {
+      // Check for complex conditionals (multiple AND/OR conditions, nested ifs)
+      const condition = path.node.test;
+      if (
+        condition.type === "LogicalExpression" ||
+        condition.type === "BinaryExpression"
+      ) {
+        complexConditionals.push({
+          line: path.node.loc.start.line,
+          condition: condition,
+        });
+      }
+    },
+  });
+
+  // Check for duplicate code (already implemented)
+  duplicatedCode = checkCodeDuplication(code);
+
+  return { longFunctions, complexConditionals, duplicatedCode };
+}
+
 // Analyze functions (for modularity and other factors)
 function analyseFunctions(ast) {
   let topLevelFunctions = 0;
@@ -240,14 +268,6 @@ function hasJSDoc(path) {
   return leading.some((c) => c.value.startsWith("*"));
 }
 
-// Get the longest function
-function getLongestFunction(functions) {
-  return functions.reduce(
-    (maxFn, fn) => (fn.lines > maxFn.lines ? fn : maxFn),
-    functions[0]
-  );
-}
-
 // Calculate average function length
 function calculateAverageFunctionLength(functions) {
   return (
@@ -269,7 +289,7 @@ function calculateCommentDensity(code, lines) {
 }
 
 // Calculate health score with dynamic thresholds based on codebase size
-function calculateHealthScore(functionsData, duplicateCode, deadCode, lines) {
+function calculateHealthScore(functionsData, deadCode, lines) {
   const sizeFactor = Math.floor(lines / 1000);
   const maxTopLevelFunctions = Math.min(30, 10 + sizeFactor);
   const maxLargeFunctions = Math.min(15, 5 + sizeFactor);
@@ -281,7 +301,6 @@ function calculateHealthScore(functionsData, duplicateCode, deadCode, lines) {
     functionsData.largeFunctions.length > maxLargeFunctions ? 1 : 0;
   const undocumentedIssue =
     functionsData.undocumented.length > maxUndocumented ? 1 : 0;
-  const duplicationPenalty = duplicateCode.length > 0 ? 1 : 0;
   const deadCodePenalty = Math.floor(
     (deadCode.unusedVariables.length + deadCode.unusedFunctions.length) / 2
   );
@@ -290,7 +309,6 @@ function calculateHealthScore(functionsData, duplicateCode, deadCode, lines) {
     topLevelFunctionIssue +
     largeFunctionIssue +
     undocumentedIssue +
-    duplicationPenalty +
     deadCodePenalty;
   return Math.max(0, 100 - issueCount * 15);
 }
@@ -298,14 +316,12 @@ function calculateHealthScore(functionsData, duplicateCode, deadCode, lines) {
 // Generate markdown report from analysis results
 function generateMarkdownReport(fileUri, analysisResults, lines) {
   const {
-    longestFn,
     avgFnLength,
     commentDensity,
     penalty,
-    duplicateCode,
     deadCode,
+    refactorOpportunities,
     undocumented,
-    largeFunctions,
   } = analysisResults;
 
   const displayDate = new Date().toLocaleString("en-GB", {
@@ -316,19 +332,6 @@ function generateMarkdownReport(fileUri, analysisResults, lines) {
     minute: "2-digit",
   });
 
-  // Add code duplication section to the markdown report
-  let duplicationText = "No duplicate code found";
-  if (duplicateCode && duplicateCode.length > 0) {
-    duplicationText = duplicateCode
-      .map((dup) => {
-        return `Duplicate code found at lines ${dup.firstOccurrence} and ${dup.secondOccurrence}:
-        \`\`\`
-        ${dup.block}
-        \`\`\``;
-      })
-      .join("\n\n");
-  }
-
   // Add dead code section to the markdown report
   let deadCodeText = "No dead code found";
   if (
@@ -336,8 +339,60 @@ function generateMarkdownReport(fileUri, analysisResults, lines) {
     deadCode.unusedFunctions.length > 0
   ) {
     deadCodeText = `
-    **Unused Variables:** ${deadCode.unusedVariables.join(", ") || "None"}
-    **Unused Functions:** ${deadCode.unusedFunctions.join(", ") || "None"}`;
+**Unused Variables:**
+${
+  deadCode.unusedVariables.length > 0
+    ? deadCode.unusedVariables.join(", ")
+    : "None"
+}
+
+**Unused Functions:**
+${
+  deadCode.unusedFunctions.length > 0
+    ? deadCode.unusedFunctions.join(", ")
+    : "None"
+}
+`;
+  }
+
+  // Add refactor opportunities section
+  let refactorText = "No refactoring opportunities found";
+  if (
+    refactorOpportunities.longFunctions.length > 0 ||
+    refactorOpportunities.complexConditionals.length > 0 ||
+    refactorOpportunities.duplicatedCode.length > 0
+  ) {
+    refactorText = `
+**Long Functions:**
+${
+  refactorOpportunities.longFunctions.length > 0
+    ? refactorOpportunities.longFunctions
+        .map((fn) => `- \`${fn.name}\` (${fn.lines} lines)`)
+        .join("\n")
+    : "None"
+}
+
+**Complex Conditionals:**
+${
+  refactorOpportunities.complexConditionals.length > 0
+    ? refactorOpportunities.complexConditionals
+        .map((cond) => `- Line ${cond.line}: ${cond.condition.type}`)
+        .join("\n")
+    : "None"
+}
+
+**Code Duplication:**
+${
+  refactorOpportunities.duplicatedCode.length > 0
+    ? refactorOpportunities.duplicatedCode
+        .map(
+          (dup) =>
+            `- Duplicate code found at lines ${dup.firstOccurrence} and ${dup.secondOccurrence}:\n\`\`\`\n${dup.block}\n\`\`\``
+        )
+        .join("\n\n")
+    : "None"
+}
+`;
   }
 
   return `# Structure Report: ${path.basename(fileUri.fsPath)}
@@ -345,33 +400,22 @@ function generateMarkdownReport(fileUri, analysisResults, lines) {
 ## File Summary
 - **Total Lines:** ${lines}
 - **Top-Level Functions:** ${analysisResults.topLevelFunctions}
-- **Longest Function:** \`${longestFn.name}\` (${longestFn.lines} lines)
 - **Average Function Length:** ${avgFnLength}
 - **Comment Density:** ${commentDensity}%
 
 ## Health Score
 **${penalty}%**
 
-## Code Duplication
-${duplicationText}
-
 ## Dead Code
 ${deadCodeText}
+
+## Refactoring Opportunities
+${refactorText}
 
 ## Undocumented Functions
 ${
   undocumented.map((fn) => `- \`${fn.name}\` (line ${fn.line})`).join("\n") ||
   "None"
-}
-
-## Large Functions
-${
-  largeFunctions
-    .map(
-      (fn) =>
-        `- \`${fn.name}\` (${fn.lines} lines, lines ${fn.lineStart}-${fn.lineEnd})`
-    )
-    .join("\n") || "None"
 }
 
 🕒 Report generated on: ${displayDate}`;
@@ -386,7 +430,7 @@ function createWebviewPanel(fileUri, markdownReport, analysisResults, lines) {
     { enableScripts: true }
   );
 
-  const { longestFn, undocumented, largeFunctions, duplicateCode, deadCode } =
+  const { undocumented, largeFunctions, deadCode, refactorOpportunities } =
     analysisResults;
 
   panel.webview.html = `
@@ -429,9 +473,6 @@ function createWebviewPanel(fileUri, markdownReport, analysisResults, lines) {
       <li><strong>Top-Level Functions:</strong> ${
         analysisResults.topLevelFunctions
       }</li>
-      <li><strong>Longest Function:</strong> <span class="tag">${
-        longestFn.name
-      }</span> (${longestFn.lines} lines)</li>
       <li><strong>Avg Function Length:</strong> ${
         analysisResults.avgFnLength
       }</li>
@@ -443,54 +484,75 @@ function createWebviewPanel(fileUri, markdownReport, analysisResults, lines) {
     <h2>Health Score</h2>
     <div class="score">${analysisResults.penalty}%</div>
 
-    <h2>Code Duplication</h2>
-    <ul>
-      ${
-        duplicateCode.length > 0
-          ? duplicateCode
-              .map(
-                (dup) =>
-                  `<li>Duplicate code found at lines ${dup.firstOccurrence} and ${dup.secondOccurrence}:
-                    <pre><code>${dup.block}</code></pre>
-                  </li>`
-              )
-              .join("")
-          : "<li>No duplicate code found</li>"
-      }
-    </ul>
-
     <h2>Dead Code</h2>
     <ul>
       ${
         deadCode.unusedVariables.length > 0
           ? `<li><strong>Unused Variables:</strong> ${deadCode.unusedVariables.join(
-              ", "
+              ",  "
             )}</li>`
           : "<li>No unused variables found</li>"
       }
       ${
         deadCode.unusedFunctions.length > 0
           ? `<li><strong>Unused Functions:</strong> ${deadCode.unusedFunctions.join(
-              ", "
+              ",  "
             )}</li>`
           : "<li>No unused functions found</li>"
       }
     </ul>
+
+    <h2>Refactoring Opportunities</h2>
+    <ul>
+      ${
+        refactorOpportunities.longFunctions.length > 0
+          ? `<li><strong>Long Functions:</strong><ul>
+              ${refactorOpportunities.longFunctions
+                .map(
+                  (fn) =>
+                    `<li><strong>${fn.name}</strong> (${fn.lines} lines) - Consider splitting into smaller functions<br><br></li>`
+                )
+                .join("")}
+            </ul></li>`
+          : "<li>No long functions found</li>"
+      }
+      
+      ${
+        refactorOpportunities.complexConditionals.length > 0
+          ? `<li><strong>Complex Conditionals:</strong><ul>
+              ${refactorOpportunities.complexConditionals
+                .map(
+                  (cond) =>
+                    `<li>Line ${cond.line}: ${cond.condition.type} - Consider simplifying this conditional<br><br></li>`
+                )
+                .join("")}
+            </ul></li>`
+          : "<li>No complex conditionals found</li>"
+      }
+      
+      ${
+        refactorOpportunities.duplicatedCode.length > 0
+          ? `<li><strong>Code Duplication:</strong><ul>
+              ${refactorOpportunities.duplicatedCode
+                .map(
+                  (dup) =>
+                    `<li>Duplicate code found at lines ${dup.firstOccurrence} and ${dup.secondOccurrence}:
+                    <pre><code>${dup.block}</code></pre></li>`
+                )
+                .join("")}
+            </ul></li>`
+          : "<li>No duplicate code found</li>"
+      }
+    </ul>
+
 
     <h2>Undocumented Functions</h2>
     <ul>${
       undocumented
         .map(
           (fn) =>
-            `<li><button class="tag-btn" onclick="jumpTo(${fn.line})">➡️ ${fn.name}</button> <span>(line ${fn.line})</span></li>`
+            `<li><button class="tag-btn" onclick="jumpTo(${fn.line})">➡️ ${fn.name}</button> <span>(line ${fn.line})</span><br><br></li>`
         )
-        .join("") || "<li>None</li>"
-    }</ul>
-
-    <h2>Large Functions</h2>
-    <ul>${
-      largeFunctions
-        .map((fn) => `<li>${fn.name} (${fn.lines} lines)</li>`)
         .join("") || "<li>None</li>"
     }</ul>
 
