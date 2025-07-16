@@ -5,7 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const puppeteer = require("puppeteer");
 
-async function runStructureCheck() {
+async function runCheckStructure() {
   const editor = vscode.window.activeTextEditor;
   if (!editor) return vscode.window.showWarningMessage("❌ No active file");
 
@@ -453,4 +453,4 @@ function createHtmlContent(fileUri, results, lines) {
   </body></html>`;
 }
 
-module.exports = { run: runStructureCheck };
+module.exports = { run: runCheckStructure };

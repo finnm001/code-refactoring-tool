@@ -1,6 +1,7 @@
 const vscode = require("vscode");
 const fixNaming = require("./features/fixNaming");
 const checkStructure = require("./features/checkStructure");
+const lintErrors = require("./features/lintErrors");
 
 function activate(context) {
   const disposable = vscode.commands.registerCommand(
@@ -20,7 +21,7 @@ function activate(context) {
           },
           {
             label: "🧪 Lint for Errors",
-            description: "Find syntax issues using ESLint",
+            description: "Find syntax issues using ESLint (JavaScript & TypeScript)",
           },
         ],
         {
@@ -35,10 +36,8 @@ function activate(context) {
         await fixNaming.run(context);
       } else if (feature.label === "📁 Check Structure") {
         await checkStructure.run(context);
-      } else {
-        vscode.window.showInformationMessage(
-          `🚧 ${feature.label} not implemented yet.`
-        );
+      } else if (feature.label === "🧪 Lint for Errors") {
+        await lintErrors.run(context);
       }
     }
   );
