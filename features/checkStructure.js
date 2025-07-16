@@ -1,20 +1,17 @@
 const vscode = require("vscode");
 const parser = require("@babel/parser");
 const traverse = require("@babel/traverse").default;
-const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
 
-// Main function to run the analysis
 async function runStructureCheck() {
   const editor = vscode.window.activeTextEditor;
-  if (!editor) return vscode.window.showWarningMessage("❌ No active file");
+  if (!editor) return vscode.window.showWarningMessage("\u274c No active file");
 
   const document = editor.document;
   const fileUri = document.uri;
 
   if (document.isUntitled)
-    return vscode.window.showErrorMessage("❌ Please save the file first.");
+    return vscode.window.showErrorMessage("\u274c Please save the file first.");
   if (
     document.isDirty &&
     (await promptSaveChanges(document)) !== "Save and Continue"
@@ -22,7 +19,6 @@ async function runStructureCheck() {
     return;
 
   await document.save();
-
   const code = document.getText();
   const lines = code.split("\n").length;
 
@@ -30,7 +26,7 @@ async function runStructureCheck() {
   try {
     ast = parseCodeToAST(code);
   } catch (err) {
-    return vscode.window.showErrorMessage("❌ Could not parse JS file.");
+    return vscode.window.showErrorMessage("\u274c Could not parse JS file.");
   }
 
   const analysisResults = analyseCodeStructure(ast, code, lines);
@@ -39,13 +35,7 @@ async function runStructureCheck() {
     analysisResults,
     lines
   );
-  const panel = createWebviewPanel(
-    fileUri,
-    markdownReport,
-    analysisResults,
-    lines
-  );
-
+  const panel = createWebviewPanel(fileUri, analysisResults, lines);
   handlePanelMessages(
     panel,
     document,
@@ -55,16 +45,14 @@ async function runStructureCheck() {
   );
 }
 
-// Helper function to prompt user to save changes
 async function promptSaveChanges(document) {
   return await vscode.window.showInformationMessage(
-    "💾 Unsaved changes detected. Save before analysing?",
+    "\ud83d\udcc2 Unsaved changes detected. Save before analysing?",
     "Save and Continue",
     "Cancel"
   );
 }
 
-// Parse code into AST
 function parseCodeToAST(code) {
   return parser.parse(code, {
     sourceType: "module",
@@ -76,254 +64,214 @@ function parseCodeToAST(code) {
   });
 }
 
-// Function to generate a hash for a code block
-function generateCodeHash(codeBlock) {
-  const hash = crypto.createHash("sha256");
-  hash.update(codeBlock);
-  return hash.digest("hex");
+function extractFunctionMetrics(path) {
+  const name = path.node.id?.name || "anonymous";
+  const start = path.node.loc.start.line;
+  const end = path.node.loc.end.line;
+  const length = end - start;
+  const params = path.node.params?.length || 0;
+  let complexity = 1;
+  let nesting = 0;
+  let currentNesting = 0;
+
+  path.traverse({
+    enter(subPath) {
+      if (
+        subPath.isIfStatement() ||
+        subPath.isForStatement() ||
+        subPath.isWhileStatement() ||
+        subPath.isBlockStatement() ||
+        subPath.isSwitchStatement() ||
+        subPath.isTryStatement()
+      ) {
+        currentNesting++;
+        nesting = Math.max(nesting, currentNesting);
+      }
+      if (
+        subPath.isLogicalExpression() ||
+        subPath.isConditionalExpression() ||
+        subPath.isBinaryExpression()
+      ) {
+        complexity++;
+      }
+    },
+    exit(subPath) {
+      if (
+        subPath.isIfStatement() ||
+        subPath.isForStatement() ||
+        subPath.isWhileStatement() ||
+        subPath.isBlockStatement() ||
+        subPath.isSwitchStatement() ||
+        subPath.isTryStatement()
+      ) {
+        currentNesting--;
+      }
+    },
+  });
+
+  return { name, start, end, length, params, complexity, nesting };
 }
 
-// Function to clean a code block by removing excessive whitespace
-function cleanCodeBlock(codeBlock) {
-  return codeBlock.replace(/\s+/g, " ").trim();
+function checkTestability(path) {
+  let hasSideEffects = false;
+  let hasReturn = false;
+
+  path.traverse({
+    enter(subPath) {
+      if (
+        subPath.isCallExpression() &&
+        ["console", "setTimeout", "setInterval", "fetch"].includes(
+          subPath.node.callee?.object?.name
+        )
+      ) {
+        hasSideEffects = true;
+      }
+      if (subPath.isReturnStatement()) hasReturn = true;
+    },
+  });
+
+  return { hasSideEffects, isPure: hasReturn && !hasSideEffects };
 }
 
-// Analyze the code structure
 function analyseCodeStructure(ast, code, lines) {
-  const deadCode = checkDeadCode(ast);
-  const refactorOpportunities = checkRefactoringOpportunities(ast, code);
+  const functions = [];
+  const undocumented = [];
 
-  const functionsData = analyseFunctions(ast);
-  const avgFnLength = calculateAverageFunctionLength(
-    functionsData.allFunctions
+  traverse(ast, {
+    FunctionDeclaration(path) {
+      const metrics = extractFunctionMetrics(path);
+      const testability = checkTestability(path);
+      const leading = path.node.leadingComments || [];
+      const isDocumented = leading.some((c) => c.value.startsWith("*"));
+
+      functions.push({ ...metrics, ...testability, documented: isDocumented });
+      if (!isDocumented)
+        undocumented.push({ name: metrics.name, line: metrics.start });
+    },
+  });
+
+  const avgFnLength = functions.length
+    ? (
+        functions.reduce((sum, fn) => sum + fn.length, 0) / functions.length
+      ).toFixed(1)
+    : "0.0";
+  const commentDensity = lines
+    ? (
+        (code
+          .split("\n")
+          .filter((l) => l.trim().startsWith("//") || l.trim().startsWith("/*"))
+          .length /
+          lines) *
+        100
+      ).toFixed(1)
+    : "0.0";
+
+  const longFunctions = functions.filter((fn) => fn.length > 50);
+  const highComplexity = functions.filter((fn) => fn.complexity > 8);
+  const untestable = functions.filter((fn, idx, arr) => {
+    return !fn.isPure && arr.findIndex((f) => f.name === fn.name) === idx;
+  });
+
+  const techDebtScore = Math.min(
+    100,
+    Math.round(
+      ((longFunctions.length * 0.3 +
+        highComplexity.length * 0.3 +
+        untestable.length * 0.2 +
+        undocumented.length * 0.2) *
+        100) /
+        (functions.length || 1)
+    )
   );
-  const commentDensity = calculateCommentDensity(code, lines);
+  const healthScore = Math.max(0, 100 - techDebtScore);
 
-  const penalty = calculateHealthScore(functionsData, deadCode, lines);
+  const observations = [];
+
+  // 1. Documentation Gaps
+  if (undocumented.length > functions.length * 0.5) {
+    observations.push(
+      "<strong>Documentation Gaps:</strong> Over half of the functions lack documentation. Consider adding JSDoc comments to clarify purpose, parameters, and return values."
+    );
+  }
+
+  // 2. Long Functions
+  if (longFunctions.length > 0) {
+    const names = longFunctions
+      .map((f) => `<code>${f.name}</code> (${f.length} lines)`)
+      .join(", ");
+    observations.push(
+      `<strong>Length Concerns:</strong> ${names} ${
+        longFunctions.length > 1 ? "are" : "is"
+      } quite long. Consider decomposing into smaller, single-responsibility functions.`
+    );
+  }
+
+  // 3. High Complexity
+  if (highComplexity.length > 0) {
+    const names = highComplexity
+      .map(
+        (f) =>
+          `<code>${f.name}</code> (Complexity: <strong>${f.complexity}</strong>)`
+      )
+      .join(", ");
+    observations.push(
+      `<strong>Complex Logic:</strong> The following functions have high cyclomatic complexity: ${names}. This may impact readability and maintainability.`
+    );
+  }
+
+  // 4. Testability
+  if (untestable.length > 0) {
+    const names = untestable.map((f) => `<code>${f.name}</code>`).join(", ");
+    observations.push(
+      `<strong>Testability Issues:</strong> ${names} exhibit side effects (e.g., <code>console</code> output, <code>setTimeout</code>). Consider isolating side effects to improve testability.`
+    );
+  }
+
+  // 5. Redundancy
+  const functionNameMap = new Map();
+  functions.forEach((f) => {
+    const key = f.name.replace(/Again$/, ""); // crude dedup check
+    functionNameMap.set(key, (functionNameMap.get(key) || 0) + 1);
+  });
+  const redundantGroups = Array.from(functionNameMap.entries()).filter(
+    ([, count]) => count > 1
+  );
+  if (
+    redundantGroups.length > 0 ||
+    code.match(/for\s*\(let\s+[a-z]+\s*=\s*0;/g)?.length > 1
+  ) {
+    observations.push(
+      `<strong>Redundant Logic:</strong> Duplicate functions (e.g., ${redundantGroups
+        .map(([name]) => `<code>${name}</code>`)
+        .join(
+          ", "
+        )}) and repeated loop patterns were found. Consider consolidation to reduce code duplication.`
+    );
+  }
+
+  // 6. Comment Density
+  if (parseFloat(commentDensity) < 20) {
+    observations.push(
+      `<strong>Low Comment Density</strong> (<strong>${commentDensity}%</strong>): Minimal inline comments reduce clarity. Add explanations for non-trivial logic where needed.`
+    );
+  }
 
   return {
-    ...functionsData,
-    deadCode,
-    refactorOpportunities,
+    totalFunctions: functions.length,
     avgFnLength,
     commentDensity,
-    penalty,
+    healthScore,
+    techDebtScore,
+    functions,
+    longFunctions,
+    highComplexity,
+    untestable,
+    undocumented,
+    observations,
   };
 }
 
-// Check for code duplication
-function checkCodeDuplication(code) {
-  const codeBlocks = code
-    .split("\n")
-    .map((line, index) => ({
-      lineNumber: index + 1,
-      code: line.trim(),
-    }))
-    .filter((block) => block.code !== "}" && block.code !== "");
-
-  const hashes = {};
-  const duplicates = [];
-  codeBlocks.forEach((block) => {
-    const cleanedBlock = cleanCodeBlock(block.code);
-    const blockHash = generateCodeHash(cleanedBlock);
-
-    if (hashes[blockHash]) {
-      duplicates.push({
-        block: cleanedBlock,
-        firstOccurrence: hashes[blockHash],
-        secondOccurrence: block.lineNumber,
-      });
-    } else {
-      hashes[blockHash] = block.lineNumber;
-    }
-  });
-
-  return duplicates;
-}
-
-// Detect dead code such as unused variables/functions
-function checkDeadCode(ast) {
-  let unusedVariables = [];
-  let unusedFunctions = [];
-
-  const variableDeclarations = new Set();
-  const variableAccesses = new Set();
-  const functionDeclarations = new Set();
-  const functionCalls = new Set();
-
-  traverse(ast, {
-    VariableDeclarator(path) {
-      const variableName = path.node.id.name;
-      variableDeclarations.add(variableName);
-    },
-    FunctionDeclaration(path) {
-      const functionName = path.node.id.name;
-      functionDeclarations.add(functionName);
-
-      traverse(ast, {
-        CallExpression(callPath) {
-          if (callPath.node.callee.name === functionName) {
-            functionCalls.add(functionName);
-          }
-        },
-      });
-    },
-    Identifier(path) {
-      const variableName = path.node.name;
-      if (
-        path.scope.hasBinding(variableName) &&
-        variableDeclarations.has(variableName)
-      ) {
-        variableAccesses.add(variableName);
-      }
-    },
-  });
-
-  unusedVariables = [...variableDeclarations].filter(
-    (variable) => !variableAccesses.has(variable)
-  );
-  unusedFunctions = [...functionDeclarations].filter(
-    (func) => !functionCalls.has(func)
-  );
-
-  return { unusedVariables, unusedFunctions };
-}
-
-function checkRefactoringOpportunities(ast, code) {
-  let longFunctions = [];
-  let complexConditionals = [];
-  let duplicatedCode = [];
-
-  // Check for long functions (greater than 50 lines)
-  traverse(ast, {
-    FunctionDeclaration(path) {
-      const { name, size } = extractFunctionDetails(path);
-      if (size > 50) {
-        // Mark functions that are too long
-        longFunctions.push({ name, lines: size });
-      }
-    },
-    IfStatement(path) {
-      // Check for complex conditionals (multiple AND/OR conditions, nested ifs)
-      const condition = path.node.test;
-      if (
-        condition.type === "LogicalExpression" ||
-        condition.type === "BinaryExpression"
-      ) {
-        complexConditionals.push({
-          line: path.node.loc.start.line,
-          condition: condition,
-        });
-      }
-    },
-  });
-
-  // Check for duplicate code (already implemented)
-  duplicatedCode = checkCodeDuplication(code);
-
-  return { longFunctions, complexConditionals, duplicatedCode };
-}
-
-// Analyze functions (for modularity and other factors)
-function analyseFunctions(ast) {
-  let topLevelFunctions = 0;
-  let allFunctions = [];
-  let largeFunctions = [];
-  let undocumented = [];
-
-  traverse(ast, {
-    FunctionDeclaration(path) {
-      if (path.parent.type === "Program") topLevelFunctions++;
-
-      const { name, size, start, end } = extractFunctionDetails(path);
-      allFunctions.push({ name, lines: size, lineStart: start, lineEnd: end });
-
-      if (size > 50)
-        largeFunctions.push({
-          name,
-          lines: size,
-          lineStart: start,
-          lineEnd: end,
-        });
-
-      if (!hasJSDoc(path)) undocumented.push({ name, line: start });
-    },
-  });
-
-  return { topLevelFunctions, allFunctions, largeFunctions, undocumented };
-}
-
-// Extract details of each function
-function extractFunctionDetails(path) {
-  const start = path.node.loc.start.line;
-  const end = path.node.loc.end.line;
-  const size = end - start;
-  const name = path.node.id?.name || "anonymous function";
-  return { name, size, start, end };
-}
-
-// Check if function has JSDoc comments
-function hasJSDoc(path) {
-  const leading = path.node.leadingComments || [];
-  return leading.some((c) => c.value.startsWith("*"));
-}
-
-// Calculate average function length
-function calculateAverageFunctionLength(functions) {
-  return (
-    functions.reduce((sum, fn) => sum + fn.lines, 0) / functions.length
-  ).toFixed(1);
-}
-
-// Calculate comment density
-function calculateCommentDensity(code, lines) {
-  const commentLines = code
-    .split("\n")
-    .filter(
-      (l) =>
-        l.trim().startsWith("//") ||
-        l.trim().startsWith("/*") ||
-        l.trim().startsWith("*")
-    ).length;
-  return ((commentLines / lines) * 100).toFixed(1);
-}
-
-// Calculate health score with dynamic thresholds based on codebase size
-function calculateHealthScore(functionsData, deadCode, lines) {
-  const sizeFactor = Math.floor(lines / 1000);
-  const maxTopLevelFunctions = Math.min(30, 10 + sizeFactor);
-  const maxLargeFunctions = Math.min(15, 5 + sizeFactor);
-  const maxUndocumented = Math.min(15, sizeFactor + 2);
-
-  const topLevelFunctionIssue =
-    functionsData.topLevelFunctions > maxTopLevelFunctions ? 1 : 0;
-  const largeFunctionIssue =
-    functionsData.largeFunctions.length > maxLargeFunctions ? 1 : 0;
-  const undocumentedIssue =
-    functionsData.undocumented.length > maxUndocumented ? 1 : 0;
-  const deadCodePenalty = Math.floor(
-    (deadCode.unusedVariables.length + deadCode.unusedFunctions.length) / 2
-  );
-
-  const issueCount =
-    topLevelFunctionIssue +
-    largeFunctionIssue +
-    undocumentedIssue +
-    deadCodePenalty;
-  return Math.max(0, 100 - issueCount * 15);
-}
-
-// Generate markdown report from analysis results
-function generateMarkdownReport(fileUri, analysisResults, lines) {
-  const {
-    avgFnLength,
-    commentDensity,
-    penalty,
-    deadCode,
-    refactorOpportunities,
-    undocumented,
-  } = analysisResults;
-
+function generateMarkdownReport(fileUri, results, lines) {
   const displayDate = new Date().toLocaleString("en-GB", {
     year: "numeric",
     month: "2-digit",
@@ -332,97 +280,74 @@ function generateMarkdownReport(fileUri, analysisResults, lines) {
     minute: "2-digit",
   });
 
-  // Add dead code section to the markdown report
-  let deadCodeText = "No dead code found";
-  if (
-    deadCode.unusedVariables.length > 0 ||
-    deadCode.unusedFunctions.length > 0
-  ) {
-    deadCodeText = `
-**Unused Variables:**
-${
-  deadCode.unusedVariables.length > 0
-    ? deadCode.unusedVariables.join(", ")
-    : "None"
-}
+  const mapList = (arr, fn) =>
+    Array.isArray(arr) && arr.length ? arr.map(fn).join("\n") : "None";
 
-**Unused Functions:**
-${
-  deadCode.unusedFunctions.length > 0
-    ? deadCode.unusedFunctions.join(", ")
-    : "None"
-}
-`;
-  }
+  const undocumentedText = mapList(
+    results.undocumented,
+    (f) => `- \`${f.name}\` (line ${f.line})`
+  );
+  const longFnsText = mapList(
+    results.longFunctions,
+    (f) => `- \`${f.name}\` (${f.length} lines)`
+  );
+  const complexityText = mapList(
+    results.highComplexity,
+    (f) => `- \`${f.name}\` (complexity: ${f.complexity})`
+  );
+  const untestableText = mapList(
+    results.untestable,
+    (f) => `- \`${f.name}\` (side effects detected)`
+  );
+  const observationsText = mapList(results.observations, (o) => `- ${o}`);
 
-  // Add refactor opportunities section
-  let refactorText = "No refactoring opportunities found";
-  if (
-    refactorOpportunities.longFunctions.length > 0 ||
-    refactorOpportunities.complexConditionals.length > 0 ||
-    refactorOpportunities.duplicatedCode.length > 0
-  ) {
-    refactorText = `
-**Long Functions:**
-${
-  refactorOpportunities.longFunctions.length > 0
-    ? refactorOpportunities.longFunctions
-        .map((fn) => `- \`${fn.name}\` (${fn.lines} lines)`)
-        .join("\n")
-    : "None"
-}
-
-**Complex Conditionals:**
-${
-  refactorOpportunities.complexConditionals.length > 0
-    ? refactorOpportunities.complexConditionals
-        .map((cond) => `- Line ${cond.line}: ${cond.condition.type}`)
-        .join("\n")
-    : "None"
-}
-
-**Code Duplication:**
-${
-  refactorOpportunities.duplicatedCode.length > 0
-    ? refactorOpportunities.duplicatedCode
-        .map(
-          (dup) =>
-            `- Duplicate code found at lines ${dup.firstOccurrence} and ${dup.secondOccurrence}:\n\`\`\`\n${dup.block}\n\`\`\``
-        )
-        .join("\n\n")
-    : "None"
-}
-`;
-  }
+  const techDebtLabel =
+    results.techDebtScore > 75
+      ? "High"
+      : results.techDebtScore > 40
+      ? "Moderate"
+      : "Low";
+  const healthLabel =
+    results.healthScore >= 80
+      ? "Healthy"
+      : results.healthScore >= 50
+      ? "Moderate"
+      : "Needs Attention";
 
   return `# Structure Report: ${path.basename(fileUri.fsPath)}
 
-## File Summary
+## 📂 File Summary
 - **Total Lines:** ${lines}
-- **Top-Level Functions:** ${analysisResults.topLevelFunctions}
-- **Average Function Length:** ${avgFnLength}
-- **Comment Density:** ${commentDensity}%
+- **Functions:** ${results.totalFunctions}
+- **Average Function Length:** ${results.avgFnLength} lines
+- **Comment Density:** ${results.commentDensity}%
 
-## Health Score
-**${penalty}%**
+## ❤️ Health Score
+- **${results.healthScore}%** – ${healthLabel}
 
-## Dead Code
-${deadCodeText}
+## 🔧 Technical Debt
+- **${results.techDebtScore}%** – ${techDebtLabel}
 
-## Refactoring Opportunities
-${refactorText}
+## 🧠 Refactoring Opportunities
+### 🔁 Long Functions
+${longFnsText}
 
-## Undocumented Functions
-${
-  undocumented.map((fn) => `- \`${fn.name}\` (line ${fn.line})`).join("\n") ||
-  "None"
-}
+### ⚠️ High Complexity Functions
+${complexityText}
+
+### 🧪 Untestable Functions
+${untestableText}
+
+## 📝 Undocumented Functions
+${undocumentedText}
+
+## 💡 Observations
+${observationsText}
 
 🕒 Report generated on: ${displayDate}`;
 }
 
-// Create Webview panel for report display
-function createWebviewPanel(fileUri, markdownReport, analysisResults, lines) {
+function createWebviewPanel(fileUri, results, lines) {
   const panel = vscode.window.createWebviewPanel(
     "structureReport",
     `Structure Report: ${path.basename(fileUri.fsPath)}`,
@@ -430,159 +355,80 @@ function createWebviewPanel(fileUri, markdownReport, analysisResults, lines) {
     { enableScripts: true }
   );
 
-  const { undocumented, largeFunctions, deadCode, refactorOpportunities } =
-    analysisResults;
+  const safeMap = (arr, fn, fallback = "<li>None</li>") =>
+    Array.isArray(arr) && arr.length ? arr.map(fn).join("") : fallback;
 
-  panel.webview.html = `
-  <!DOCTYPE html>
-  <html>
-  <head>
-    <style>
-      body {
-        font-family: "Segoe UI", sans-serif;
-        background: #1e1e1e;
-        color: #d4d4d4;
-        padding: 2rem;
-        font-size: 15px;
-      }
-      h1, h2 { color: #eaeaea; }
-      ul { padding-left: 2rem; }
-      .score { font-size: 2rem; font-weight: bold; color: ${
-        analysisResults.penalty >= 80
-          ? "#4CAF50"
-          : analysisResults.penalty >= 50
-          ? "#FFC107"
-          : "#F44336"
-      }; }
-      .tag-btn { background: #2d2d2d; color: #ffd27f; font-family: monospace; padding: 4px 8px; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; }
-      .tag-btn:hover { background: #5e5e5e; }
-      .controls { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #444; display: flex; gap: 1rem; flex-wrap: wrap; }
-      .export-btn, .copy-btn { font-size: 14px; padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; }
-      .export-btn { background: #4CAF50; color: white; }
-      .export-btn:hover { background: #45a049; }
-      .copy-btn { background: #007acc; color: white; }
-      .copy-btn:hover { background: #005fa3; }
-      footer { margin-top: 2rem; font-size: 13px; color: #888; border-top: 1px solid #444; padding-top: 1rem; }
-    </style>
-  </head>
-  <body>
+  const healthColor =
+    results.healthScore >= 80
+      ? "#4CAF50"
+      : results.healthScore >= 50
+      ? "#FFC107"
+      : "#F44336";
+  const techDebtLabel =
+    results.techDebtScore > 75
+      ? "High"
+      : results.techDebtScore > 40
+      ? "Moderate"
+      : "Low";
+  const healthLabel =
+    results.healthScore >= 80
+      ? "Healthy"
+      : results.healthScore >= 50
+      ? "Moderate"
+      : "Needs Attention";
+
+  panel.webview.html = `<!DOCTYPE html><html><head><style>
+    body { font-family: sans-serif; padding: 2rem; background: #1e1e1e; color: #d4d4d4; }
+    h1, h2 { color: #ffffff; }
+    .score { font-size: 2rem; color: ${healthColor}; }
+    ul { padding-left: 1.5rem; }
+    li { margin-bottom: 0.5rem; }
+    footer { margin-top: 2rem; font-size: 12px; color: #aaa; border-top: 1px solid #444; padding-top: 1rem; }
+  </style></head><body>
     <h1>Structure Report: ${path.basename(fileUri.fsPath)}</h1>
-    <h2>File Summary</h2>
-    <ul>
-      <li><strong>Total Lines:</strong> ${lines}</li>
-      <li><strong>Top-Level Functions:</strong> ${
-        analysisResults.topLevelFunctions
-      }</li>
-      <li><strong>Avg Function Length:</strong> ${
-        analysisResults.avgFnLength
-      }</li>
-      <li><strong>Comment Density:</strong> ${
-        analysisResults.commentDensity
-      }%</li>
-    </ul>
-
-    <h2>Health Score</h2>
-    <div class="score">${analysisResults.penalty}%</div>
-
-    <h2>Dead Code</h2>
-    <ul>
-      ${
-        deadCode.unusedVariables.length > 0
-          ? `<li><strong>Unused Variables:</strong> ${deadCode.unusedVariables.join(
-              ",  "
-            )}</li>`
-          : "<li>No unused variables found</li>"
-      }
-      ${
-        deadCode.unusedFunctions.length > 0
-          ? `<li><strong>Unused Functions:</strong> ${deadCode.unusedFunctions.join(
-              ",  "
-            )}</li>`
-          : "<li>No unused functions found</li>"
-      }
-    </ul>
-
-    <h2>Refactoring Opportunities</h2>
-    <ul>
-      ${
-        refactorOpportunities.longFunctions.length > 0
-          ? `<li><strong>Long Functions:</strong><ul>
-              ${refactorOpportunities.longFunctions
-                .map(
-                  (fn) =>
-                    `<li><strong>${fn.name}</strong> (${fn.lines} lines) - Consider splitting into smaller functions<br><br></li>`
-                )
-                .join("")}
-            </ul></li>`
-          : "<li>No long functions found</li>"
-      }
-      
-      ${
-        refactorOpportunities.complexConditionals.length > 0
-          ? `<li><strong>Complex Conditionals:</strong><ul>
-              ${refactorOpportunities.complexConditionals
-                .map(
-                  (cond) =>
-                    `<li>Line ${cond.line}: ${cond.condition.type} - Consider simplifying this conditional<br><br></li>`
-                )
-                .join("")}
-            </ul></li>`
-          : "<li>No complex conditionals found</li>"
-      }
-      
-      ${
-        refactorOpportunities.duplicatedCode.length > 0
-          ? `<li><strong>Code Duplication:</strong><ul>
-              ${refactorOpportunities.duplicatedCode
-                .map(
-                  (dup) =>
-                    `<li>Duplicate code found at lines ${dup.firstOccurrence} and ${dup.secondOccurrence}:
-                    <pre><code>${dup.block}</code></pre></li>`
-                )
-                .join("")}
-            </ul></li>`
-          : "<li>No duplicate code found</li>"
-      }
-    </ul>
-
-
-    <h2>Undocumented Functions</h2>
-    <ul>${
-      undocumented
-        .map(
-          (fn) =>
-            `<li><button class="tag-btn" onclick="jumpTo(${fn.line})">➡️ ${fn.name}</button> <span>(line ${fn.line})</span><br><br></li>`
-        )
-        .join("") || "<li>None</li>"
-    }</ul>
-
-    <div class="controls">
-      <button class="export-btn" onclick="exportReport()">💾 Export as Markdown (.md)</button>
-      <button class="copy-btn" onclick="copyToClipboard()">📋 Copy to Clipboard</button>
-    </div>
-
+    <h2>📂 File Summary</h2>
+    <ul><li><strong>Total Lines:</strong> ${lines}</li><li><strong>Functions:</strong> ${
+    results.totalFunctions
+  }</li><li><strong>Average Function Length:</strong> ${
+    results.avgFnLength
+  } lines</li><li><strong>Comment Density:</strong> ${
+    results.commentDensity
+  }%</li></ul>
+    <h2>❤️ Health Score</h2><div class="score">${
+      results.healthScore
+    }% – ${healthLabel}</div>
+    <h2>🔧 Technical Debt</h2><ul><li><strong>Score:</strong> ${
+      results.techDebtScore
+    }%</li><li><strong>Level:</strong> ${techDebtLabel}</li></ul>
+    <h2>🧠 Refactoring Opportunities</h2>
+    <h3>🔁 Long Functions</h3><ul>${safeMap(
+      results.longFunctions,
+      (fn) => `<li>${fn.name} (${fn.length} lines)</li>`
+    )}</ul>
+    <h3>⚠️ High Complexity Functions</h3><ul>${safeMap(
+      results.highComplexity,
+      (fn) => `<li>${fn.name} (Complexity: ${fn.complexity})</li>`
+    )}</ul>
+    <h3>🧪 Untestable Functions</h3><ul>${safeMap(
+      results.untestable,
+      (fn) => `<li>${fn.name} – side effects detected</li>`
+    )}</ul>
+    <h2>📝 Undocumented Functions</h2><ul>${safeMap(
+      results.undocumented,
+      (fn) => `<li>${fn.name} (line ${fn.line})</li>`
+    )}</ul>
+    <h2>💡 Observations</h2><ul>${safeMap(
+      results.observations,
+      (o) => `<li>${o}</li>`
+    )}</ul>
     <footer>🕒 Report generated on: ${new Date().toLocaleString(
       "en-GB"
     )}</footer>
-
-    <script>
-      const vscode = acquireVsCodeApi();
-      function jumpTo(line) { vscode.postMessage({ type: 'jumpToLine', line }); }
-      function exportReport() { vscode.postMessage({ type: 'exportMarkdown' }); }
-      function copyToClipboard() {
-        const text = document.body.innerText;
-        navigator.clipboard.writeText(text).then(() => {
-          vscode.postMessage({ type: 'copySuccess' });
-        });
-      }
-    </script>
-  </body>
-  </html>`;
+  </body></html>`;
 
   return panel;
 }
 
-// Handle messages from the webview panel
 function handlePanelMessages(
   panel,
   document,
@@ -592,36 +438,8 @@ function handlePanelMessages(
 ) {
   panel.webview.onDidReceiveMessage(
     async (message) => {
-      if (message.type === "jumpToLine") {
-        const pos = new vscode.Position(message.line - 1, 0);
-        const sel = new vscode.Selection(pos, pos);
-        vscode.window.showTextDocument(document, { selection: sel });
-      } else if (message.type === "exportMarkdown") {
-        const folder = path.join(
-          path.dirname(fileUri.fsPath),
-          "structure-reports"
-        );
-        if (!fs.existsSync(folder)) fs.mkdirSync(folder);
-
-        const filePath = path.join(
-          folder,
-          `${path.basename(
-            fileUri.fsPath,
-            path.extname(fileUri.fsPath)
-          )}-report-${new Date()
-            .toISOString()
-            .slice(0, 10)
-            .replace(/-/g, "-")}_${new Date()
-            .toISOString()
-            .slice(11, 16)
-            .replace(/:/g, "-")}.md`
-        );
-        fs.writeFileSync(filePath, markdownReport);
-
-        vscode.window.showInformationMessage(
-          `📄 Markdown report saved as ${path.basename(filePath)}`
-        );
-      } else if (message.type === "copySuccess") {
+      if (message.type === "copy") {
+        await vscode.env.clipboard.writeText(markdownReport);
         vscode.window.showInformationMessage("📋 Markdown copied to clipboard");
       }
     },
