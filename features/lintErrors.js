@@ -12,10 +12,24 @@ async function runLintErrors() {
   const document = editor.document;
   const filePath = document.fileName;
 
+  if (document.isUntitled)
+    return vscode.window.showErrorMessage("❌ Please save the file first.");
+  if (document.isDirty) {
+    const save = await vscode.window.showInformationMessage(
+      "This file has unsaved changes. Please save before continuing.",
+      "Save and Continue",
+      "Cancel"
+    );
+    if (save !== "Save and Continue") return;
+    await document.save();
+  }
+
   const supportedExtensions = [".js", ".ts", ".jsx", ".tsx"];
   if (!supportedExtensions.some((ext) => filePath.endsWith(ext))) {
     return vscode.window.showErrorMessage(
-      `❌ Unsupported file type. Only ${supportedExtensions.join(", ")} supported.`
+      `❌ Unsupported file type. Only ${supportedExtensions.join(
+        ", "
+      )} supported.`
     );
   }
 
@@ -50,7 +64,7 @@ async function runLintErrors() {
 
   if (!hasConfig) {
     return vscode.window.showWarningMessage(
-      "⚠️ ESLint config not found. Please follow the Lint for Errors Setup section in the README."
+      "⚠️ ESLint config not found. Please follow the [Lint Errors setup guide](LINK TO GITHUB REPO REQUIRED, LINK TO CORRECT SECTION) in the README."
     );
   }
 
