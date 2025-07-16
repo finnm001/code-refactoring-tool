@@ -1,6 +1,8 @@
 const vscode = require("vscode");
 const parser = require("@babel/parser");
 const traverse = require("@babel/traverse").default;
+const child_process = require("child_process");
+const path = require("path");
 
 const {
   isCamelCase,
@@ -10,6 +12,53 @@ const {
   toPascalCase,
   toSnakeCase,
 } = require("../utils/namingUtils");
+
+function detectPreferredStyleFromLanguage(languageId, fileName = "") {
+  const ext = fileName.split(".").pop().toLowerCase();
+  if (languageId === "python" || ext === "py") return "🐍 snake_case";
+  if (["java", "csharp", "c++", "cpp", "cs"].includes(languageId))
+    return "🔠 PascalCase";
+  return "🐫 camelCase";
+}
+
+function extractPythonNames(filePath) {
+  const scriptPath = path.join(__dirname, "../utils/py_extractor.py");
+  try {
+    const result = child_process.spawnSync("python", [scriptPath, filePath], {
+      encoding: "utf-8",
+    });
+    if (result.status !== 0) throw new Error(result.stderr);
+    return JSON.parse(result.stdout);
+  } catch (err) {
+    vscode.window.showErrorMessage(
+      "❌ Failed to parse Python file. Make sure Python is installed and accessible in your system PATH."
+    );
+    return [];
+  }
+}
+
+function extractCSharpNames(filePath) {
+  const dllPath = path.join(__dirname, "../utils/CsNameExtractor.dll");
+  try {
+    const result = child_process.spawnSync("dotnet", [dllPath, filePath], {
+      encoding: "utf-8",
+    });
+
+    console.log("stdout:", result.stdout);
+    console.log("stderr:", result.stderr);
+    console.log("exit code:", result.status);
+
+    if (result.status !== 0)
+      throw new Error(result.stderr || "Non-zero exit code");
+
+    return JSON.parse(result.stdout);
+  } catch (err) {
+    vscode.window.showErrorMessage(
+      `❌ Failed to parse C# file: ${err.message || "Unknown error"}.`
+    );
+    return [];
+  }
+}
 
 async function run(context) {
   const scheme = "js-refactor-preview";
@@ -28,11 +77,12 @@ async function run(context) {
 
   const document = editor.document;
   const fileUri = document.uri;
+  const languageId = document.languageId;
+  const filePath = document.fileName;
+  const code = document.getText();
 
-  if (document.isUntitled) {
+  if (document.isUntitled)
     return vscode.window.showErrorMessage("❌ Please save the file first.");
-  }
-
   if (document.isDirty) {
     const save = await vscode.window.showInformationMessage(
       "This file has unsaved changes. Please save before continuing.",
@@ -43,14 +93,105 @@ async function run(context) {
     await document.save();
   }
 
+  const suggestedStyle = detectPreferredStyleFromLanguage(languageId, filePath);
   const namingStyle = await vscode.window.showQuickPick(
     ["🐍 snake_case", "🐫 camelCase", "🔠 PascalCase"],
     {
-      placeHolder:
-        "What case would you like to use for variable and function names?",
+      placeHolder: `Choose a naming convention (Suggested: ${suggestedStyle})`,
+      ignoreFocusOut: true,
     }
   );
   if (!namingStyle) return;
+
+  const isStyle = namingStyle.includes("snake")
+    ? isSnakeCase
+    : namingStyle.includes("Pascal")
+    ? isPascalCase
+    : isCamelCase;
+
+  const toStyle = namingStyle.includes("snake")
+    ? toSnakeCase
+    : namingStyle.includes("Pascal")
+    ? toPascalCase
+    : toCamelCase;
+
+  const found = [];
+
+  if (languageId === "python") {
+    const names = extractPythonNames(filePath);
+    if (!names || names.length === 0) return; // Exit if names couldn't be extracted
+
+    for (const name of names) {
+      const suggestion = toStyle(name);
+      if (!isStyle(name) && name !== suggestion) {
+        found.push({ original: name, suggestion });
+      }
+    }
+  } else if (languageId === "csharp" || filePath.endsWith(".cs")) {
+    const names = extractCSharpNames(filePath);
+    if (!names || names.length === 0) return; // Exit if names couldn't be extracted
+
+    for (const name of names) {
+      const suggestion = toStyle(name);
+      if (!isStyle(name) && name !== suggestion) {
+        found.push({ original: name, suggestion });
+      }
+    }
+  } else {
+    let ast;
+    try {
+      ast = parser.parse(code, {
+        sourceType: "module",
+        plugins: ["jsx", "typescript"],
+      });
+    } catch {
+      return vscode.window.showErrorMessage(
+        "❌ Could not parse the file. Check for syntax errors."
+      );
+    }
+
+    const scopeStack = [];
+
+    traverse(ast, {
+      enter(path) {
+        if (path.scope) {
+          scopeStack.push(new Set(Object.keys(path.scope.bindings)));
+        }
+      },
+      exit(path) {
+        if (path.scope) {
+          scopeStack.pop();
+        }
+      },
+      VariableDeclarator(path) {
+        const name = path.node.id.name;
+        const suggestion = toStyle(name);
+        if (!isStyle(name) && name !== suggestion) {
+          const allBindings = new Set([...scopeStack.flat()]);
+          if (!allBindings.has(suggestion)) {
+            found.push({ original: name, suggestion });
+          }
+        }
+      },
+      FunctionDeclaration(path) {
+        const name = path.node.id?.name;
+        if (!name) return;
+        const suggestion = toStyle(name);
+        if (!isStyle(name) && name !== suggestion) {
+          const allBindings = new Set([...scopeStack.flat()]);
+          if (!allBindings.has(suggestion)) {
+            found.push({ original: name, suggestion });
+          }
+        }
+      },
+    });
+  }
+
+  if (found.length === 0) {
+    return vscode.window.showInformationMessage(
+      `✅ All names follow ${namingStyle}!`
+    );
+  }
 
   const proceedMode = await vscode.window.showQuickPick(
     ["✅ Apply All", "🔍 Review Individually", "❌ Cancel"],
@@ -58,118 +199,6 @@ async function run(context) {
   );
   if (!proceedMode || proceedMode.includes("Cancel")) return;
   const applyAll = proceedMode.includes("Apply All");
-
-  const code = document.getText();
-  let ast;
-
-  try {
-    ast = parser.parse(code, {
-      sourceType: "module",
-      plugins: ["jsx", "typescript"],
-    });
-  } catch {
-    return vscode.window.showErrorMessage(
-      "❌ Could not parse the file. Check for syntax errors or duplicate names."
-    );
-  }
-
-  const found = [];
-  const scopeStack = [];
-
-  function getValidator(style) {
-    if (style.includes("PascalCase")) return isPascalCase;
-    if (style.includes("snake_case")) return isSnakeCase;
-    return isCamelCase;
-  }
-
-  function getTransformer(style) {
-    if (style.includes("PascalCase")) return toPascalCase;
-    if (style.includes("snake_case")) return toSnakeCase;
-    return toCamelCase;
-  }
-
-  const isStyle = getValidator(namingStyle);
-  const toStyle = getTransformer(namingStyle);
-
-  traverse(ast, {
-    enter(path) {
-      if (path.scope) {
-        scopeStack.push(new Set(Object.keys(path.scope.bindings)));
-      }
-    },
-    exit(path) {
-      if (path.scope) {
-        scopeStack.pop();
-      }
-    },
-
-    VariableDeclarator(path) {
-      const name = path.node.id.name;
-      const suggestion = toStyle(name);
-      if (
-        !isStyle(name) &&
-        suggestion !== name &&
-        !found.some((f) => f.original === name)
-      ) {
-        const allBindings = new Set([...scopeStack.flat()]);
-        if (!allBindings.has(suggestion)) {
-          found.push({ original: name, suggestion });
-        } else {
-          console.warn(
-            `⚠️ Skipped "${name}" → "${suggestion}" due to scope conflict.`
-          );
-        }
-      }
-    },
-
-    FunctionDeclaration(path) {
-      const name = path.node.id?.name;
-      if (!name) return;
-      const suggestion = toStyle(name);
-      if (
-        !isStyle(name) &&
-        suggestion !== name &&
-        !found.some((f) => f.original === name)
-      ) {
-        const allBindings = new Set([...scopeStack.flat()]);
-        if (!allBindings.has(suggestion)) {
-          found.push({ original: name, suggestion });
-        } else {
-          console.warn(
-            `⚠️ Skipped "${name}" → "${suggestion}" due to scope conflict.`
-          );
-        }
-      }
-    },
-
-    ArrowFunctionExpression(path) {
-      const parent = path.parent;
-      if (parent.type === "VariableDeclarator" && parent.id?.name) {
-        const name = parent.id.name;
-        const suggestion = toStyle(name);
-        if (
-          !isStyle(name) &&
-          suggestion !== name &&
-          !found.some((f) => f.original === name)
-        ) {
-          const allBindings = new Set([...scopeStack.flat()]);
-          if (!allBindings.has(suggestion)) {
-            found.push({ original: name, suggestion });
-          } else {
-            console.warn(
-              `⚠️ Skipped "${name}" → "${suggestion}" due to scope conflict.`
-            );
-          }
-        }
-      }
-    },
-  });
-
-  if (found.length === 0) {
-    return vscode.window.showInformationMessage(
-      `✅ All names follow ${namingStyle}!`
-    );
-  }
 
   let currentCode = code;
   let totalApplied = 0;
@@ -266,7 +295,6 @@ async function run(context) {
   }
 
   const totalSkipped = found.length - totalApplied;
-
   if (totalApplied > 0 || totalSkipped > 0) {
     vscode.window.showInformationMessage(
       `✅ ${totalApplied} name${
