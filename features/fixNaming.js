@@ -44,7 +44,7 @@ async function run(context) {
   }
 
   const namingStyle = await vscode.window.showQuickPick(
-    ["🐍 snake_case", "🐫 camelCase", "📐 PascalCase"],
+    ["🐍 snake_case", "🐫 camelCase", "🔠 PascalCase"],
     {
       placeHolder:
         "What case would you like to use for variable and function names?",
@@ -53,7 +53,7 @@ async function run(context) {
   if (!namingStyle) return;
 
   const proceedMode = await vscode.window.showQuickPick(
-    ["Apply All", "Review Individually", "❌ Cancel"],
+    ["✅ Apply All", "🔍 Review Individually", "❌ Cancel"],
     { placeHolder: "How would you like to proceed with the suggestions?" }
   );
   if (!proceedMode || proceedMode.includes("Cancel")) return;
@@ -283,11 +283,14 @@ async function run(context) {
     }
   }
 
-  if (totalApplied > 0) {
+  const totalSkipped = found.length - totalApplied;
+
+  if (totalApplied > 0 || totalSkipped > 0) {
     vscode.window.showInformationMessage(
       `✅ ${totalApplied} name${
-        totalApplied > 1 ? "s" : ""
-      } updated to ${namingStyle}`
+        totalApplied !== 1 ? "s" : ""
+      } updated to ${namingStyle}` +
+        (totalSkipped > 0 ? ` | ⏭️ ${totalSkipped} skipped` : "")
     );
   }
 
