@@ -44,13 +44,20 @@ async function run(context) {
   }
 
   const namingStyle = await vscode.window.showQuickPick(
-    ["🐫 camelCase", "📐 PascalCase", "🐍 snake_case"],
+    ["🐫 camelCase", "🐍 snake_case", "📐 PascalCase"],
     {
       placeHolder:
         "What case would you like to use for variable and function names?",
     }
   );
-  if (!namingStyle) return; // Exit if user cancels
+  if (!namingStyle) return;
+
+  const proceedMode = await vscode.window.showQuickPick(
+    ["Apply All", "Review Individually", "❌ Cancel"],
+    { placeHolder: "How would you like to proceed with the suggestions?" }
+  );
+  if (!proceedMode || proceedMode.includes("Cancel")) return;
+  const applyAll = proceedMode.includes("Apply All");
 
   const code = document.getText();
   let ast;
@@ -90,12 +97,7 @@ async function run(context) {
         suggestion !== name &&
         !found.some((f) => f.original === name)
       ) {
-        found.push({
-          label: `❌ ${name}`,
-          description: `Suggest: ${suggestion}`,
-          original: name,
-          suggestion,
-        });
+        found.push({ original: name, suggestion });
       }
     },
     FunctionDeclaration(path) {
@@ -107,12 +109,7 @@ async function run(context) {
         suggestion !== name &&
         !found.some((f) => f.original === name)
       ) {
-        found.push({
-          label: `❌ ${name}`,
-          description: `Suggest: ${suggestion}`,
-          original: name,
-          suggestion,
-        });
+        found.push({ original: name, suggestion });
       }
     },
     ArrowFunctionExpression(path) {
@@ -125,12 +122,7 @@ async function run(context) {
           suggestion !== name &&
           !found.some((f) => f.original === name)
         ) {
-          found.push({
-            label: `❌ ${name}`,
-            description: `Suggest: ${suggestion}`,
-            original: name,
-            suggestion,
-          });
+          found.push({ original: name, suggestion });
         }
       }
     },
@@ -143,16 +135,19 @@ async function run(context) {
   }
 
   let currentCode = code;
+  let totalApplied = 0;
 
-  for (let i = 0; i < found.length; i++) {
-    const selection = found[i];
-    const updatedCode = currentCode.replace(
-      new RegExp(`\\b${selection.original}\\b`, "g"),
-      selection.suggestion
-    );
+  if (applyAll) {
+    let updatedCode = currentCode;
+    for (const { original, suggestion } of found) {
+      updatedCode = updatedCode.replace(
+        new RegExp(`\\b${original}\\b`, "g"),
+        suggestion
+      );
+    }
 
     const previewUri = vscode.Uri.parse(
-      `${scheme}:/refactor-preview/${selection.original}-to-${selection.suggestion}.js`
+      `${scheme}:/refactor-preview/all-${namingStyle.replace(/\W/g, "")}.js`
     );
     previewContent.set(previewUri.toString(), updatedCode);
 
@@ -160,51 +155,120 @@ async function run(context) {
       "vscode.diff",
       fileUri,
       previewUri,
-      `${selection.original} → ${selection.suggestion}`
+      `All Naming Changes → ${namingStyle}`
     );
 
-    const apply = await vscode.window.showInformationMessage(
-      `Replace all instances of "${selection.original}" with "${selection.suggestion}"?`,
-      "Apply",
+    const confirm = await vscode.window.showInformationMessage(
+      `Apply all ${found.length} renaming changes?`,
+      "Apply All Now",
       "Cancel"
     );
-
-    if (apply === "Apply") {
-      try {
-        const edit = new vscode.WorkspaceEdit();
-        const fullRange = new vscode.Range(
-          document.positionAt(0),
-          document.positionAt(code.length)
-        );
-        edit.replace(fileUri, fullRange, updatedCode);
-        await vscode.workspace.applyEdit(edit);
-        await document.save();
-        currentCode = updatedCode;
-        vscode.window.showInformationMessage("✅ Changes applied and saved.");
-      } catch {
-        vscode.window.showErrorMessage("❌ Failed to apply changes.");
+    if (confirm !== "Apply All Now") {
+      const tabGroups = vscode.window.tabGroups.all;
+      for (const group of tabGroups) {
+        for (const tab of group.tabs) {
+          if (tab.label.includes(`All Naming Changes → ${namingStyle}`)) {
+            await vscode.window.tabGroups.close(tab);
+          }
+        }
       }
+      return;
+    }
+
+    try {
+      const edit = new vscode.WorkspaceEdit();
+      const fullRange = new vscode.Range(
+        document.positionAt(0),
+        document.positionAt(currentCode.length)
+      );
+      edit.replace(fileUri, fullRange, updatedCode);
+      await vscode.workspace.applyEdit(edit);
+      await document.save();
+      totalApplied = found.length;
+    } catch {
+      vscode.window.showErrorMessage("❌ Failed to apply changes.");
     }
 
     const tabGroups = vscode.window.tabGroups.all;
     for (const group of tabGroups) {
       for (const tab of group.tabs) {
-        if (
-          tab.label.includes(`${selection.original} → ${selection.suggestion}`)
-        ) {
+        if (tab.label.includes(`All Naming Changes → ${namingStyle}`)) {
           await vscode.window.tabGroups.close(tab);
         }
       }
     }
-
-    if (i < found.length - 1) {
-      const next = await vscode.window.showInformationMessage(
-        "Would you like to review the next suggestion?",
-        "Yes",
-        "No"
+  } else {
+    for (let i = 0; i < found.length; i++) {
+      const selection = found[i];
+      const updatedCode = currentCode.replace(
+        new RegExp(`\\b${selection.original}\\b`, "g"),
+        selection.suggestion
       );
-      if (next !== "Yes") break;
+
+      const previewUri = vscode.Uri.parse(
+        `${scheme}:/refactor-preview/${selection.original}-to-${selection.suggestion}.js`
+      );
+      previewContent.set(previewUri.toString(), updatedCode);
+
+      await vscode.commands.executeCommand(
+        "vscode.diff",
+        fileUri,
+        previewUri,
+        `${selection.original} → ${selection.suggestion}`
+      );
+
+      const apply = await vscode.window.showInformationMessage(
+        `Replace all instances of "${selection.original}" with "${selection.suggestion}"?`,
+        "Apply",
+        "Cancel"
+      );
+      if (apply !== "Apply") continue;
+
+      try {
+        const edit = new vscode.WorkspaceEdit();
+        const fullRange = new vscode.Range(
+          document.positionAt(0),
+          document.positionAt(currentCode.length)
+        );
+        edit.replace(fileUri, fullRange, updatedCode);
+        await vscode.workspace.applyEdit(edit);
+        await document.save();
+        currentCode = updatedCode;
+        totalApplied++;
+      } catch {
+        vscode.window.showErrorMessage("❌ Failed to apply changes.");
+      }
+
+      const tabGroups = vscode.window.tabGroups.all;
+      for (const group of tabGroups) {
+        for (const tab of group.tabs) {
+          if (
+            tab.label.includes(
+              `${selection.original} → ${selection.suggestion}`
+            )
+          ) {
+            await vscode.window.tabGroups.close(tab);
+          }
+        }
+      }
+
+      if (i < found.length - 1) {
+        const next = await vscode.window.showInformationMessage(
+          "Would you like to review the next suggestion?",
+          "Yes",
+          "No"
+        );
+        if (next !== "Yes") break;
+      }
     }
+  }
+
+  if (totalApplied > 0) {
+    vscode.window.showInformationMessage(
+      `✅ ${totalApplied} name${
+        totalApplied > 1 ? "s" : ""
+      } updated to ${namingStyle}`
+    );
   }
 
   try {
