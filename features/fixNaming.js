@@ -60,7 +60,7 @@ function extractCSharpNames(filePath) {
   }
 }
 
-async function run(context) {
+async function runFixNaming(context) {
   const scheme = "js-refactor-preview";
   const previewContent = new Map();
 
@@ -316,4 +316,4 @@ async function run(context) {
   } catch {}
 }
 
-module.exports = { run };
+module.exports = { run: runFixNaming };
