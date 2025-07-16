@@ -44,7 +44,7 @@ async function run(context) {
   }
 
   const namingStyle = await vscode.window.showQuickPick(
-    ["🐫 camelCase", "🐍 snake_case", "📐 PascalCase"],
+    ["🐍 snake_case", "🐫 camelCase", "📐 PascalCase"],
     {
       placeHolder:
         "What case would you like to use for variable and function names?",
@@ -217,12 +217,32 @@ async function run(context) {
         `${selection.original} → ${selection.suggestion}`
       );
 
-      const apply = await vscode.window.showInformationMessage(
-        `Replace all instances of "${selection.original}" with "${selection.suggestion}"?`,
-        "Apply",
-        "Cancel"
+      const customName = await vscode.window.showInputBox({
+        prompt: `Rename "${selection.original}" to:`,
+        value: selection.suggestion,
+        ignoreFocusOut: true,
+      });
+
+      if (!customName || customName === selection.original) {
+        const tabGroups = vscode.window.tabGroups.all;
+        for (const group of tabGroups) {
+          for (const tab of group.tabs) {
+            if (
+              tab.label.includes(
+                `${selection.original} → ${selection.suggestion}`
+              )
+            ) {
+              await vscode.window.tabGroups.close(tab);
+            }
+          }
+        }
+        continue;
+      }
+
+      const confirmedCode = currentCode.replace(
+        new RegExp(`\\b${selection.original}\\b`, "g"),
+        customName
       );
-      if (apply !== "Apply") continue;
 
       try {
         const edit = new vscode.WorkspaceEdit();
@@ -230,10 +250,10 @@ async function run(context) {
           document.positionAt(0),
           document.positionAt(currentCode.length)
         );
-        edit.replace(fileUri, fullRange, updatedCode);
+        edit.replace(fileUri, fullRange, confirmedCode);
         await vscode.workspace.applyEdit(edit);
         await document.save();
-        currentCode = updatedCode;
+        currentCode = confirmedCode;
         totalApplied++;
       } catch {
         vscode.window.showErrorMessage("❌ Failed to apply changes.");
