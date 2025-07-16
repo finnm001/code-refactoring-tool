@@ -39,7 +39,7 @@ async function runStructureCheck() {
 
 async function promptSaveChanges(document) {
   return await vscode.window.showInformationMessage(
-    "📂 Unsaved changes detected. Save before analysing?",
+    "This file has unsaved changes. Save before continuing?",
     "Save and Continue",
     "Cancel"
   );

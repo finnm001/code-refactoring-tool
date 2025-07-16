@@ -28,7 +28,7 @@ async function run(context) {
 
   if (document.isDirty) {
     const save = await vscode.window.showInformationMessage(
-      "💾 This file has unsaved changes. Save before continuing?",
+      "This file has unsaved changes. Save before continuing?",
       "Save and Continue",
       "Cancel"
     );
