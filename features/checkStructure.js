@@ -1,17 +1,19 @@
 const vscode = require("vscode");
 const parser = require("@babel/parser");
 const traverse = require("@babel/traverse").default;
+const fs = require("fs");
 const path = require("path");
+const puppeteer = require("puppeteer");
 
 async function runStructureCheck() {
   const editor = vscode.window.activeTextEditor;
-  if (!editor) return vscode.window.showWarningMessage("\u274c No active file");
+  if (!editor) return vscode.window.showWarningMessage("❌ No active file");
 
   const document = editor.document;
   const fileUri = document.uri;
 
   if (document.isUntitled)
-    return vscode.window.showErrorMessage("\u274c Please save the file first.");
+    return vscode.window.showErrorMessage("❌ Please save the file first.");
   if (
     document.isDirty &&
     (await promptSaveChanges(document)) !== "Save and Continue"
@@ -26,28 +28,18 @@ async function runStructureCheck() {
   try {
     ast = parseCodeToAST(code);
   } catch (err) {
-    return vscode.window.showErrorMessage("\u274c Could not parse JS file.");
+    return vscode.window.showErrorMessage("❌ Could not parse JS file.");
   }
 
   const analysisResults = analyseCodeStructure(ast, code, lines);
-  const markdownReport = generateMarkdownReport(
-    fileUri,
-    analysisResults,
-    lines
-  );
-  const panel = createWebviewPanel(fileUri, analysisResults, lines);
-  handlePanelMessages(
-    panel,
-    document,
-    fileUri,
-    markdownReport,
-    analysisResults
-  );
+  const htmlReport = createHtmlContent(fileUri, analysisResults, lines);
+  const panel = createWebviewPanel(fileUri, htmlReport);
+  handlePanelMessages(panel, fileUri, analysisResults, lines);
 }
 
 async function promptSaveChanges(document) {
   return await vscode.window.showInformationMessage(
-    "\ud83d\udcc2 Unsaved changes detected. Save before analysing?",
+    "📂 Unsaved changes detected. Save before analysing?",
     "Save and Continue",
     "Cancel"
   );
@@ -62,6 +54,35 @@ function parseCodeToAST(code) {
     errorRecovery: true,
     attachComment: true,
   });
+}
+
+async function exportPdf(fileUri, htmlContent) {
+  const workspacePath =
+    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || __dirname;
+
+  const reportsDir = path.join(workspacePath, "structure-reports");
+
+  // Ensure the directory exists
+  if (!fs.existsSync(reportsDir)) {
+    fs.mkdirSync(reportsDir, { recursive: true });
+  }
+
+  const pdfPath = path.join(
+    reportsDir,
+    `${path.basename(fileUri.fsPath, ".js")}_StructureReport.pdf`
+  );
+
+  try {
+    const browser = await puppeteer.launch({ headless: true });
+    const page = await browser.newPage();
+    await page.setContent(htmlContent, { waitUntil: "networkidle0" });
+    await page.pdf({ path: pdfPath, format: "A4", printBackground: true });
+    await browser.close();
+
+    vscode.window.showInformationMessage(`📄 PDF saved to: ${pdfPath}`);
+  } catch (err) {
+    vscode.window.showErrorMessage("❌ Failed to generate PDF: " + err.message);
+  }
 }
 
 function extractFunctionMetrics(path) {
@@ -189,8 +210,9 @@ function analyseCodeStructure(ast, code, lines) {
 
   // 1. Documentation Gaps
   if (undocumented.length > functions.length * 0.5) {
+    const percent = ((undocumented.length / functions.length) * 100).toFixed(0);
     observations.push(
-      "<strong>Documentation Gaps:</strong> Over half of the functions lack documentation. Consider adding JSDoc comments to clarify purpose, parameters, and return values."
+      `<strong>Documentation Gaps:</strong> ${undocumented.length} of ${functions.length} functions lack documentation (${percent}%). Add JSDoc comments to clarify purpose, parameters, and return values.`
     );
   }
 
@@ -271,90 +293,45 @@ function analyseCodeStructure(ast, code, lines) {
   };
 }
 
-function generateMarkdownReport(fileUri, results, lines) {
-  const displayDate = new Date().toLocaleString("en-GB", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-
-  const mapList = (arr, fn) =>
-    Array.isArray(arr) && arr.length ? arr.map(fn).join("\n") : "None";
-
-  const undocumentedText = mapList(
-    results.undocumented,
-    (f) => `- \`${f.name}\` (line ${f.line})`
-  );
-  const longFnsText = mapList(
-    results.longFunctions,
-    (f) => `- \`${f.name}\` (${f.length} lines)`
-  );
-  const complexityText = mapList(
-    results.highComplexity,
-    (f) => `- \`${f.name}\` (complexity: ${f.complexity})`
-  );
-  const untestableText = mapList(
-    results.untestable,
-    (f) => `- \`${f.name}\` (side effects detected)`
-  );
-  const observationsText = mapList(results.observations, (o) => `- ${o}`);
-
-  const techDebtLabel =
-    results.techDebtScore > 75
-      ? "High"
-      : results.techDebtScore > 40
-      ? "Moderate"
-      : "Low";
-  const healthLabel =
-    results.healthScore >= 80
-      ? "Healthy"
-      : results.healthScore >= 50
-      ? "Moderate"
-      : "Needs Attention";
-
-  return `# Structure Report: ${path.basename(fileUri.fsPath)}
-
-## 📂 File Summary
-- **Total Lines:** ${lines}
-- **Functions:** ${results.totalFunctions}
-- **Average Function Length:** ${results.avgFnLength} lines
-- **Comment Density:** ${results.commentDensity}%
-
-## ❤️ Health Score
-- **${results.healthScore}%** – ${healthLabel}
-
-## 🔧 Technical Debt
-- **${results.techDebtScore}%** – ${techDebtLabel}
-
-## 🧠 Refactoring Opportunities
-### 🔁 Long Functions
-${longFnsText}
-
-### ⚠️ High Complexity Functions
-${complexityText}
-
-### 🧪 Untestable Functions
-${untestableText}
-
-## 📝 Undocumented Functions
-${undocumentedText}
-
-## 💡 Observations
-${observationsText}
-
-🕒 Report generated on: ${displayDate}`;
-}
-
-function createWebviewPanel(fileUri, results, lines) {
+function createWebviewPanel(fileUri, htmlContent) {
   const panel = vscode.window.createWebviewPanel(
     "structureReport",
     `Structure Report: ${path.basename(fileUri.fsPath)}`,
     vscode.ViewColumn.Beside,
     { enableScripts: true }
   );
+  panel.webview.html = htmlContent;
+  return panel;
+}
 
+function handlePanelMessages(panel, fileUri, results, lines) {
+  panel.webview.onDidReceiveMessage(
+    async (message) => {
+      if (message.type === "exportPdf") {
+        const html = createHtmlContent(fileUri, results, lines);
+        await exportPdf(fileUri, html);
+      }
+
+      if (message.type === "jumpTo") {
+        const doc = await vscode.workspace.openTextDocument(fileUri);
+        const editor = await vscode.window.showTextDocument(
+          doc,
+          vscode.ViewColumn.One
+        );
+        const pos = new vscode.Position(message.line - 1, 0);
+        editor.selection = new vscode.Selection(pos, pos);
+        editor.revealRange(
+          new vscode.Range(pos, pos),
+          vscode.TextEditorRevealType.InCenter
+        );
+      }
+    },
+    undefined,
+    []
+  );
+}
+
+function createHtmlContent(fileUri, results, lines) {
   const safeMap = (arr, fn, fallback = "<li>None</li>") =>
     Array.isArray(arr) && arr.length ? arr.map(fn).join("") : fallback;
 
@@ -364,42 +341,71 @@ function createWebviewPanel(fileUri, results, lines) {
       : results.healthScore >= 50
       ? "#FFC107"
       : "#F44336";
-  const techDebtLabel =
-    results.techDebtScore > 75
-      ? "High"
-      : results.techDebtScore > 40
-      ? "Moderate"
-      : "Low";
   const healthLabel =
     results.healthScore >= 80
       ? "Healthy"
       : results.healthScore >= 50
       ? "Moderate"
       : "Needs Attention";
+  const techDebtLabel =
+    results.techDebtScore > 75
+      ? "High"
+      : results.techDebtScore > 40
+      ? "Moderate"
+      : "Low";
 
-  panel.webview.html = `<!DOCTYPE html><html><head><style>
+  return `<!DOCTYPE html><html><head><style>
     body { font-family: sans-serif; padding: 2rem; background: #1e1e1e; color: #d4d4d4; }
-    h1, h2 { color: #ffffff; }
+    h1, h2, h3 { color: #ffffff; }
     .score { font-size: 2rem; color: ${healthColor}; }
     ul { padding-left: 1.5rem; }
     li { margin-bottom: 0.5rem; }
-    footer { margin-top: 2rem; font-size: 12px; color: #aaa; border-top: 1px solid #444; padding-top: 1rem; }
+    button {
+      margin-top: 2rem;
+      padding: 0.5rem 1rem;
+      font-size: 1rem;
+      background-color: #007acc;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #005f9e;
+    }
+    code a {
+      color: #4EA1FF;
+      text-decoration: none;
+    }
+    code a:hover {
+      text-decoration: underline;
+    }
+    footer { margin-top: 1rem; font-size: 12px; color: #aaa; border-top: 1px solid #444; padding-top: 1rem; }
+
+    @media print {
+      body { background: white !important; color: black !important; }
+      h1, h2, h3 { color: black !important; }
+      footer { color: #444 !important; border-top: 1px solid #ccc !important; }
+      button { display: none !important; } /* Hide button in print */
+    }
   </style></head><body>
     <h1>Structure Report: ${path.basename(fileUri.fsPath)}</h1>
     <h2>📂 File Summary</h2>
-    <ul><li><strong>Total Lines:</strong> ${lines}</li><li><strong>Functions:</strong> ${
-    results.totalFunctions
-  }</li><li><strong>Average Function Length:</strong> ${
-    results.avgFnLength
-  } lines</li><li><strong>Comment Density:</strong> ${
-    results.commentDensity
-  }%</li></ul>
-    <h2>❤️ Health Score</h2><div class="score">${
-      results.healthScore
-    }% – ${healthLabel}</div>
-    <h2>🔧 Technical Debt</h2><ul><li><strong>Score:</strong> ${
-      results.techDebtScore
-    }%</li><li><strong>Level:</strong> ${techDebtLabel}</li></ul>
+    <ul>
+      <li><strong>Total Lines:</strong> ${lines}</li>
+      <li><strong>Functions:</strong> ${results.totalFunctions}</li>
+      <li><strong>Average Function Length:</strong> ${
+        results.avgFnLength
+      } lines</li>
+      <li><strong>Comment Density:</strong> ${results.commentDensity}%</li>
+    </ul>
+    <h2>❤️ Health Score</h2>
+    <div class="score">${results.healthScore}% – ${healthLabel}</div>
+    <h2>🔧 Technical Debt</h2>
+    <ul>
+      <li><strong>Score:</strong> ${results.techDebtScore}%</li>
+      <li><strong>Level:</strong> ${techDebtLabel}</li>
+    </ul>
     <h2>🧠 Refactoring Opportunities</h2>
     <h3>🔁 Long Functions</h3><ul>${safeMap(
       results.longFunctions,
@@ -413,39 +419,36 @@ function createWebviewPanel(fileUri, results, lines) {
       results.untestable,
       (fn) => `<li>${fn.name} – side effects detected</li>`
     )}</ul>
-    <h2>📝 Undocumented Functions</h2><ul>${safeMap(
+    <h2>📝 Undocumented Functions</h2>
+    <ul>${safeMap(
       results.undocumented,
-      (fn) => `<li>${fn.name} (line ${fn.line})</li>`
+      (fn) =>
+        `<li><code><a href="javascript:void(0)" onclick="handleJump(event, ${fn.line})">${fn.name}</a></code> (line ${fn.line})</li>`
     )}</ul>
     <h2>💡 Observations</h2><ul>${safeMap(
       results.observations,
       (o) => `<li>${o}</li>`
     )}</ul>
+
+    <button id="exportPdfBtn">📄 Export as PDF</button>
     <footer>🕒 Report generated on: ${new Date().toLocaleString(
       "en-GB"
     )}</footer>
+    <script>
+      window.addEventListener("DOMContentLoaded", () => {
+        const vscode = acquireVsCodeApi();
+
+        document.getElementById("exportPdfBtn")?.addEventListener("click", () => {
+          vscode.postMessage({ type: "exportPdf" });
+        });
+
+        window.handleJump = (event, line) => {
+          event.preventDefault();
+          vscode.postMessage({ type: "jumpTo", line });
+        };
+      });
+    </script>
   </body></html>`;
-
-  return panel;
-}
-
-function handlePanelMessages(
-  panel,
-  document,
-  fileUri,
-  markdownReport,
-  analysisResults
-) {
-  panel.webview.onDidReceiveMessage(
-    async (message) => {
-      if (message.type === "copy") {
-        await vscode.env.clipboard.writeText(markdownReport);
-        vscode.window.showInformationMessage("📋 Markdown copied to clipboard");
-      }
-    },
-    undefined,
-    []
-  );
 }
 
 module.exports = { run: runStructureCheck };
