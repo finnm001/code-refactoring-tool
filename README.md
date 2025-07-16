@@ -1,6 +1,36 @@
 # PwC Code Refactor Tool
 
-## 🔧 Lint Errors Setup (Required for Lint Feature)
+## 🔤 Fix Naming — How to Use
+
+1. Open the file you want to refactor.
+2. Ensure the file is **saved** before running the PwC Code Refactor Tool.  
+   If there are unsaved changes, you’ll be prompted to **Save & Continue** or **Cancel**.
+3. Press `Ctrl + Shift + P` to open the Command Palette.
+4. Run `🔧 PwC Refactor: Analyse Code`.
+5. Select the `🔤 Fix Naming` feature.
+6. Choose your preferred naming convention:  
+   **🐍 snake_case**, **🐫 camelCase**, or **🔠 PascalCase**.  
+   _A recommended style will be suggested based on the file type or language._
+7. Select how you want to apply the changes:
+   - `✅ Apply All`: automatically rename all variables.
+   - `🔍 Review Individually`: step through and edit suggestions one by one.
+   - `❌ Cancel`: exit without applying changes.
+8. A diff window will open showing the proposed name changes.
+9. Follow the prompts to confirm and **Apply & Save** your changes, or **Cancel** if needed.
+
+## 📁 Check Structure — How to Use
+
+1. Open the file you want to analyse.
+2. Ensure the file is **saved** before running the PwC Code Refactor Tool.  
+   If there are unsaved changes, you’ll be prompted to **Save & Continue** or **Cancel**.
+3. Press `Ctrl + Shift + P` to open the Command Palette.
+4. Run `🔧 PwC Refactor: Analyse Code`.
+5. Select the `📁 Check Structure` feature.
+6. A structure report will open in a side panel, detailing the breakdown of your code’s elements.
+7. At the bottom of the report, you can choose to **Export as PDF** if needed.
+8. To close the report panel, click the `X` in the top-right corner, or press `Ctrl + F4`.
+
+## 🔧 Lint for Errors Setup (Required for Lint Feature)
 
 This feature uses **ESLint** to detect and fix code issues automatically.
 
@@ -73,3 +103,14 @@ This config:
 - Without an ESLint config, the **Lint Errors** feature will not run.
 - If missing, you'll see this message:
   - "_⚠️ ESLint config not found. Please follow the Lint Errors setup guide in the README._"
+
+## 🧪 Lint for Errors — How to Use
+
+1. Open the file you want to lint.
+2. Make sure the file is **saved** before running the PwC Code Refactor Tool.  
+   If there are unsaved changes, you’ll be prompted to **Save & Continue** or **Cancel**.
+3. Press `Ctrl + Shift + P` to open the Command Palette.
+4. Run `🔧 PwC Refactor: Analyse Code`.
+5. Choose the `🧪 Lint for Errors` feature.
+6. A diff window will appear showing the proposed ESLint fixes.
+7. You’ll then be prompted to either **Apply & Save** the changes or **Cancel**.
