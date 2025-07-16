@@ -28,7 +28,9 @@ async function runStructureCheck() {
   try {
     ast = parseCodeToAST(code);
   } catch (err) {
-    return vscode.window.showErrorMessage("❌ Could not parse JS file.");
+    return vscode.window.showErrorMessage(
+      "❌ Could not parse the file. Check for syntax errors."
+    );
   }
 
   const analysisResults = analyseCodeStructure(ast, code, lines);

@@ -35,7 +35,7 @@ async function run(context) {
 
   if (document.isDirty) {
     const save = await vscode.window.showInformationMessage(
-      "This file has unsaved changes. Save before continuing?",
+      "This file has unsaved changes. Please save before continuing.",
       "Save and Continue",
       "Cancel"
     );
@@ -68,10 +68,13 @@ async function run(context) {
       plugins: ["jsx", "typescript"],
     });
   } catch {
-    return vscode.window.showErrorMessage("❌ Could not parse JS file.");
+    return vscode.window.showErrorMessage(
+      "❌ Could not parse the file. Check for syntax errors or duplicate names."
+    );
   }
 
   const found = [];
+  const scopeStack = [];
 
   function getValidator(style) {
     if (style.includes("PascalCase")) return isPascalCase;
@@ -89,6 +92,17 @@ async function run(context) {
   const toStyle = getTransformer(namingStyle);
 
   traverse(ast, {
+    enter(path) {
+      if (path.scope) {
+        scopeStack.push(new Set(Object.keys(path.scope.bindings)));
+      }
+    },
+    exit(path) {
+      if (path.scope) {
+        scopeStack.pop();
+      }
+    },
+
     VariableDeclarator(path) {
       const name = path.node.id.name;
       const suggestion = toStyle(name);
@@ -97,9 +111,17 @@ async function run(context) {
         suggestion !== name &&
         !found.some((f) => f.original === name)
       ) {
-        found.push({ original: name, suggestion });
+        const allBindings = new Set([...scopeStack.flat()]);
+        if (!allBindings.has(suggestion)) {
+          found.push({ original: name, suggestion });
+        } else {
+          console.warn(
+            `⚠️ Skipped "${name}" → "${suggestion}" due to scope conflict.`
+          );
+        }
       }
     },
+
     FunctionDeclaration(path) {
       const name = path.node.id?.name;
       if (!name) return;
@@ -109,9 +131,17 @@ async function run(context) {
         suggestion !== name &&
         !found.some((f) => f.original === name)
       ) {
-        found.push({ original: name, suggestion });
+        const allBindings = new Set([...scopeStack.flat()]);
+        if (!allBindings.has(suggestion)) {
+          found.push({ original: name, suggestion });
+        } else {
+          console.warn(
+            `⚠️ Skipped "${name}" → "${suggestion}" due to scope conflict.`
+          );
+        }
       }
     },
+
     ArrowFunctionExpression(path) {
       const parent = path.parent;
       if (parent.type === "VariableDeclarator" && parent.id?.name) {
@@ -122,7 +152,14 @@ async function run(context) {
           suggestion !== name &&
           !found.some((f) => f.original === name)
         ) {
-          found.push({ original: name, suggestion });
+          const allBindings = new Set([...scopeStack.flat()]);
+          if (!allBindings.has(suggestion)) {
+            found.push({ original: name, suggestion });
+          } else {
+            console.warn(
+              `⚠️ Skipped "${name}" → "${suggestion}" due to scope conflict.`
+            );
+          }
         }
       }
     },
@@ -163,17 +200,7 @@ async function run(context) {
       "Apply All Now",
       "Cancel"
     );
-    if (confirm !== "Apply All Now") {
-      const tabGroups = vscode.window.tabGroups.all;
-      for (const group of tabGroups) {
-        for (const tab of group.tabs) {
-          if (tab.label.includes(`All Naming Changes → ${namingStyle}`)) {
-            await vscode.window.tabGroups.close(tab);
-          }
-        }
-      }
-      return;
-    }
+    if (confirm !== "Apply All Now") return;
 
     try {
       const edit = new vscode.WorkspaceEdit();
@@ -187,15 +214,6 @@ async function run(context) {
       totalApplied = found.length;
     } catch {
       vscode.window.showErrorMessage("❌ Failed to apply changes.");
-    }
-
-    const tabGroups = vscode.window.tabGroups.all;
-    for (const group of tabGroups) {
-      for (const tab of group.tabs) {
-        if (tab.label.includes(`All Naming Changes → ${namingStyle}`)) {
-          await vscode.window.tabGroups.close(tab);
-        }
-      }
     }
   } else {
     for (let i = 0; i < found.length; i++) {
@@ -223,21 +241,7 @@ async function run(context) {
         ignoreFocusOut: true,
       });
 
-      if (!customName || customName === selection.original) {
-        const tabGroups = vscode.window.tabGroups.all;
-        for (const group of tabGroups) {
-          for (const tab of group.tabs) {
-            if (
-              tab.label.includes(
-                `${selection.original} → ${selection.suggestion}`
-              )
-            ) {
-              await vscode.window.tabGroups.close(tab);
-            }
-          }
-        }
-        continue;
-      }
+      if (!customName || customName === selection.original) continue;
 
       const confirmedCode = currentCode.replace(
         new RegExp(`\\b${selection.original}\\b`, "g"),
@@ -257,28 +261,6 @@ async function run(context) {
         totalApplied++;
       } catch {
         vscode.window.showErrorMessage("❌ Failed to apply changes.");
-      }
-
-      const tabGroups = vscode.window.tabGroups.all;
-      for (const group of tabGroups) {
-        for (const tab of group.tabs) {
-          if (
-            tab.label.includes(
-              `${selection.original} → ${selection.suggestion}`
-            )
-          ) {
-            await vscode.window.tabGroups.close(tab);
-          }
-        }
-      }
-
-      if (i < found.length - 1) {
-        const next = await vscode.window.showInformationMessage(
-          "Would you like to review the next suggestion?",
-          "Yes",
-          "No"
-        );
-        if (next !== "Yes") break;
       }
     }
   }
