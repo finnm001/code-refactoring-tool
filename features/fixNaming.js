@@ -229,7 +229,12 @@ async function runFixNaming(context) {
       "Apply All Now",
       "Cancel"
     );
-    if (confirm !== "Apply All Now") return;
+    if (confirm !== "Apply All Now") {
+      await vscode.commands.executeCommand(
+        "workbench.action.closeActiveEditor"
+      );
+      return;
+    }
 
     try {
       const edit = new vscode.WorkspaceEdit();
