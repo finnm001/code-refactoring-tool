@@ -2,7 +2,14 @@ const vscode = require("vscode");
 const parser = require("@babel/parser");
 const traverse = require("@babel/traverse").default;
 
-const { isCamelCase, toCamelCase } = require("../utils/camelCaseUtils");
+const {
+  isCamelCase,
+  isPascalCase,
+  isSnakeCase,
+  toCamelCase,
+  toPascalCase,
+  toSnakeCase,
+} = require("../utils/namingUtils");
 
 async function run(context) {
   const scheme = "js-refactor-preview";
@@ -36,6 +43,15 @@ async function run(context) {
     await document.save();
   }
 
+  const namingStyle = await vscode.window.showQuickPick(
+    ["🐫 camelCase", "📐 PascalCase", "🐍 snake_case"],
+    {
+      placeHolder:
+        "What case would you like to use for variable and function names?",
+    }
+  );
+  if (!namingStyle) return; // Exit if user cancels
+
   const code = document.getText();
   let ast;
 
@@ -50,12 +66,27 @@ async function run(context) {
 
   const found = [];
 
+  function getValidator(style) {
+    if (style.includes("PascalCase")) return isPascalCase;
+    if (style.includes("snake_case")) return isSnakeCase;
+    return isCamelCase;
+  }
+
+  function getTransformer(style) {
+    if (style.includes("PascalCase")) return toPascalCase;
+    if (style.includes("snake_case")) return toSnakeCase;
+    return toCamelCase;
+  }
+
+  const isStyle = getValidator(namingStyle);
+  const toStyle = getTransformer(namingStyle);
+
   traverse(ast, {
     VariableDeclarator(path) {
       const name = path.node.id.name;
-      const suggestion = toCamelCase(name);
+      const suggestion = toStyle(name);
       if (
-        !isCamelCase(name) &&
+        !isStyle(name) &&
         suggestion !== name &&
         !found.some((f) => f.original === name)
       ) {
@@ -70,9 +101,9 @@ async function run(context) {
     FunctionDeclaration(path) {
       const name = path.node.id?.name;
       if (!name) return;
-      const suggestion = toCamelCase(name);
+      const suggestion = toStyle(name);
       if (
-        !isCamelCase(name) &&
+        !isStyle(name) &&
         suggestion !== name &&
         !found.some((f) => f.original === name)
       ) {
@@ -88,9 +119,9 @@ async function run(context) {
       const parent = path.parent;
       if (parent.type === "VariableDeclarator" && parent.id?.name) {
         const name = parent.id.name;
-        const suggestion = toCamelCase(name);
+        const suggestion = toStyle(name);
         if (
-          !isCamelCase(name) &&
+          !isStyle(name) &&
           suggestion !== name &&
           !found.some((f) => f.original === name)
         ) {
@@ -107,7 +138,7 @@ async function run(context) {
 
   if (found.length === 0) {
     return vscode.window.showInformationMessage(
-      "✅ All names follow camelCase!"
+      `✅ All names follow ${namingStyle}!`
     );
   }
 
@@ -155,7 +186,6 @@ async function run(context) {
       }
     }
 
-    // Close preview tab
     const tabGroups = vscode.window.tabGroups.all;
     for (const group of tabGroups) {
       for (const tab of group.tabs) {
@@ -167,7 +197,6 @@ async function run(context) {
       }
     }
 
-    // Ask to continue
     if (i < found.length - 1) {
       const next = await vscode.window.showInformationMessage(
         "Would you like to review the next suggestion?",
@@ -178,7 +207,6 @@ async function run(context) {
     }
   }
 
-  // Refocus original
   try {
     await vscode.window.showTextDocument(document, {
       preview: false,

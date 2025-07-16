@@ -10,7 +10,8 @@ function activate(context) {
         [
           {
             label: "🔤 Fix Naming",
-            description: "Detect and rename variables/functions to camelCase",
+            description:
+              "Detect and rename variables/functions to the correct case",
           },
           {
             label: "📁 Check Structure",
@@ -23,7 +24,7 @@ function activate(context) {
           },
         ],
         {
-          title: "PwC JS Refactor Tool",
+          title: "PwC Code Refactor Tool",
           placeHolder: "What would you like to do?",
         }
       );
