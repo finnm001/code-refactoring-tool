@@ -1,6 +1,12 @@
 # PwC Code Refactor Tool
 
-## 🔤 Fix Naming — How to Use
+## 1. Feature Guides
+
+This section walks you through how to use each feature in the PwC Code Refactor Tool.
+
+For any features that require setup (like Lint for Errors), setup instructions are included directly below the guide.
+
+### 1.1 🔤 Fix Naming — How to Use
 
 1. Open the file you want to refactor.
 2. Ensure the file is **saved** before running the PwC Code Refactor Tool.  
@@ -18,7 +24,7 @@
 8. A diff window will open showing the proposed name changes.
 9. Follow the prompts to confirm and **Apply & Save** your changes, or **Cancel** if needed.
 
-## 📁 Check Structure — How to Use
+### 1.2 📁 Check Structure — How to Use
 
 1. Open the file you want to analyse.
 2. Ensure the file is **saved** before running the PwC Code Refactor Tool.  
@@ -30,13 +36,26 @@
 7. At the bottom of the report, you can choose to **Export as PDF** if needed.
 8. To close the report panel, click the `X` in the top-right corner, or press `Ctrl + F4`.
 
-## 🔧 Lint for Errors Setup (Required for Lint Feature)
+### 1.3 🧪 Lint for Errors — How to Use
+
+1. Open the file you want to lint.
+2. Make sure the file is **saved** before running the PwC Code Refactor Tool.  
+   If there are unsaved changes, you’ll be prompted to **Save & Continue** or **Cancel**.
+3. Press `Ctrl + Shift + P` to open the Command Palette.
+4. Run `🔧 PwC Refactor: Analyse Code`.
+5. Choose the `🧪 Lint for Errors` feature.
+6. A diff window will appear showing the proposed ESLint fixes.
+7. You’ll then be prompted to either **Apply & Save** the changes or **Cancel**.
+
+> 🛠️ First-time using this feature? Follow the setup guide below to get started.
+
+### 1.4 🔧 Lint Errors Setup (Required for Lint Feature)
 
 This feature uses **ESLint** to detect and fix code issues automatically.
 
 To use it, you must set up ESLint in your project first.
 
-### ✅ Quick Setup Guide (Recommended)
+#### ✅ Quick Setup Guide (Recommended)
 
 Follow these steps to initialise ESLint in your project:
 
@@ -59,9 +78,9 @@ npx eslint --init
    - **Would you like to install them now? -** ✅ Yes
 4. ESLint will generate a config file for you (such as `eslint.config.js` or `.eslintrc.json`).
 
-### ⚙ Recommended ESLint Config (Optional)
+#### ⚙ Recommended ESLint Config (Optional)
 
-If you'd like a ready-to-use ESLint config for this extension, replace you config file contents with our recommended setup:
+If you'd like a ready-to-use ESLint config for this extension, replace your config file contents with our recommended setup:
 
 _You can remove the comments below once you're familiar with the rules._
 
@@ -98,19 +117,8 @@ This config:
 
 **Note:** This config is just an example — you can customise it anytime later.
 
-### ⚠️ Important
+#### ⚠️ Important
 
 - Without an ESLint config, the **Lint Errors** feature will not run.
 - If missing, you'll see this message:
   - "_⚠️ ESLint config not found. Please follow the Lint Errors setup guide in the README._"
-
-## 🧪 Lint for Errors — How to Use
-
-1. Open the file you want to lint.
-2. Make sure the file is **saved** before running the PwC Code Refactor Tool.  
-   If there are unsaved changes, you’ll be prompted to **Save & Continue** or **Cancel**.
-3. Press `Ctrl + Shift + P` to open the Command Palette.
-4. Run `🔧 PwC Refactor: Analyse Code`.
-5. Choose the `🧪 Lint for Errors` feature.
-6. A diff window will appear showing the proposed ESLint fixes.
-7. You’ll then be prompted to either **Apply & Save** the changes or **Cancel**.
