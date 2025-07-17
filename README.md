@@ -95,14 +95,14 @@ export default defineConfig([
     plugins: { js },
     extends: ["js/recommended"],
     rules: {
-      semi: ["error", "always"], // Require semicolons
-      quotes: ["error", "single"], // Enforce single quotes
-      indent: ["error", 2], // Enforce 2-space indent
-      eqeqeq: ["error", "always"], // Require strict equality
-      "no-console": "warn", // Warn on console usage
+      semi: ["error", "always"],             // Require semicolons
+      quotes: ["error", "single"],           // Enforce single quotes
+      indent: ["error", 2],                  // Enforce 2-space indent
+      eqeqeq: ["error", "always"],           // Require strict equality
+      "no-console": "warn",                  // Warn on console usage
       "space-in-parens": ["error", "never"], // No spaces inside parentheses
-      "space-infix-ops": "error", // Require spaces around operators
-      "no-multi-spaces": "error", // Disallow multiple spaces
+      "space-infix-ops": "error",            // Require spaces around operators
+      "no-multi-spaces": "error",            // Disallow multiple spaces
     },
     languageOptions: { globals: globals.node },
   },
