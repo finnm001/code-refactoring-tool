@@ -26,5 +26,10 @@
     "jest": "^30.0.4",
     "puppeteer": "^24.14.0",
     "vscode": "^1.1.37"
+  },
+  "jest": {
+    "moduleNameMapper": {
+      "^vscode$": "<rootDir>/__mocks__/vscode.js"
+    }
   }
 }

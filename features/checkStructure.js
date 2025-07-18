@@ -109,6 +109,16 @@ function extractFunctionMetrics(path) {
       ) {
         currentNesting++;
         nesting = Math.max(nesting, currentNesting);
+        // FIX: Increment complexity for each branch statement
+        if (
+          subPath.isIfStatement() ||
+          subPath.isForStatement() ||
+          subPath.isWhileStatement() ||
+          subPath.isSwitchStatement() ||
+          subPath.isTryStatement()
+        ) {
+          complexity++;
+        }
       }
       if (
         subPath.isLogicalExpression() ||
@@ -274,7 +284,14 @@ function analyseCodeStructure(ast, code, lines) {
   }
 
   // 6. Comment Density
-  if (parseFloat(commentDensity) < 20) {
+  // FIX: Only add Low Comment Density if there is at least one function or comment in the code
+  if (
+    parseFloat(commentDensity) < 20 &&
+    (functions.length > 0 ||
+      code
+        .split("\n")
+        .some((l) => l.trim().startsWith("//") || l.trim().startsWith("/*")))
+  ) {
     observations.push(
       `<strong>Low Comment Density</strong> (<strong>${commentDensity}%</strong>): Minimal inline comments reduce clarity. Add explanations for non-trivial logic where needed.`
     );
@@ -453,4 +470,15 @@ function createHtmlContent(fileUri, results, lines) {
   </body></html>`;
 }
 
-module.exports = { run: runCheckStructure };
+module.exports = {
+  run: runCheckStructure,
+  promptSaveChanges,
+  parseCodeToAST,
+  exportPdf,
+  extractFunctionMetrics,
+  checkTestability,
+  analyseCodeStructure,
+  createWebviewPanel,
+  handlePanelMessages,
+  createHtmlContent,
+};
