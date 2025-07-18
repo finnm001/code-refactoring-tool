@@ -19,7 +19,7 @@ function isPascalCase(name) {
 function toPascalCase(name) {
   return name
     .replace(/([a-z])([A-Z])/g, "$1 $2") // split camelCase words
-    .replace(/[_-]+/g, " ") // normalize snake/kebab
+    .replace(/[_-]+/g, " ") // normalise snake/kebab
     .split(" ")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join("");

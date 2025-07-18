@@ -18,7 +18,7 @@ function detectPreferredStyleFromLanguage(languageId, fileName = "") {
   if (languageId === "python" || ext === "py") return "🐍 snake_case";
   if (["java", "csharp", "c++", "cpp", "cs"].includes(languageId))
     return "🔠 PascalCase";
-  return "👫 camelCase";
+  return "🐫 camelCase";
 }
 
 function extractPythonNames(filePath) {
@@ -117,13 +117,31 @@ async function runFixNaming(context) {
 
   const found = [];
 
+  function shouldSkipRename(name, style) {
+    const shortCommonNames = new Set([
+      "sum", "avg", "max", "min", "val", "num", "idx", "len", "row", "col", "tmp", "res", "obj"
+    ]);
+
+    const isSingleWord = /^[a-z]+$/.test(name); // no underscores or caps
+    const isShort = name.length <= 4;
+    const isCommon = shortCommonNames.has(name.toLowerCase());
+
+    // Skip these only for PascalCase
+    if (style.includes("Pascal")) {
+      return isSingleWord && isShort && isCommon;
+    }
+
+    // Still skip short/common one-word names for camelCase or snake_case
+    return isSingleWord && isShort && isCommon;
+  }
+
   if (languageId === "python") {
     const names = extractPythonNames(filePath);
     if (!names || names.length === 0) return; // Exit if names couldn't be extracted
 
     for (const name of names) {
       const suggestion = toStyle(name);
-      if (!isStyle(name) && name !== suggestion) {
+      if (!isStyle(name) && name !== suggestion && !shouldSkipRename(name, namingStyle)) {
         found.push({ original: name, suggestion });
       }
     }
@@ -133,7 +151,7 @@ async function runFixNaming(context) {
 
     for (const name of names) {
       const suggestion = toStyle(name);
-      if (!isStyle(name) && name !== suggestion) {
+      if (!isStyle(name) && name !== suggestion && !shouldSkipRename(name, namingStyle)) {
         found.push({ original: name, suggestion });
       }
     }
@@ -166,7 +184,7 @@ async function runFixNaming(context) {
       VariableDeclarator(path) {
         const name = path.node.id.name;
         const suggestion = toStyle(name);
-        if (!isStyle(name) && name !== suggestion) {
+        if (!isStyle(name) && name !== suggestion && !shouldSkipRename(name, namingStyle)) {
           const allBindings = new Set([...scopeStack.flat()]);
           if (!allBindings.has(suggestion)) {
             found.push({ original: name, suggestion });
@@ -177,7 +195,7 @@ async function runFixNaming(context) {
         const name = path.node.id?.name;
         if (!name) return;
         const suggestion = toStyle(name);
-        if (!isStyle(name) && name !== suggestion) {
+        if (!isStyle(name) && name !== suggestion && !shouldSkipRename(name, namingStyle)) {
           const allBindings = new Set([...scopeStack.flat()]);
           if (!allBindings.has(suggestion)) {
             found.push({ original: name, suggestion });
