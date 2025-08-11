@@ -11,8 +11,9 @@ const {
   toCamelCase,
   toPascalCase,
   toSnakeCase,
-} = require("../utils/namingUtils");
+} = require("../utils/namingUtils.js");
 
+// ---- Language Utilities ----
 function detectPreferredStyleFromLanguage(languageId, fileName = "") {
   const ext = fileName.split(".").pop().toLowerCase();
   if (languageId === "python" || ext === "py") return "🐍 snake_case";
@@ -21,6 +22,7 @@ function detectPreferredStyleFromLanguage(languageId, fileName = "") {
   return "🐫 camelCase";
 }
 
+// ---- Extract Names ----
 function extractPythonNames(filePath) {
   const scriptPath = path.join(__dirname, "../utils/py_extractor.py");
   try {
@@ -60,8 +62,9 @@ function extractCSharpNames(filePath) {
   }
 }
 
+// ---- Main Command ----
 async function runFixNaming(context) {
-  const scheme = "pwc-refactor-preview";
+  const scheme = "js-refactor-preview";
   const previewContent = new Map();
 
   context.subscriptions.push(
@@ -93,65 +96,115 @@ async function runFixNaming(context) {
     await document.save();
   }
 
-  const suggestedStyle = detectPreferredStyleFromLanguage(languageId, filePath);
-  const namingStyle = await vscode.window.showQuickPick(
+  const namingStyle = await promptForNamingStyle(languageId, filePath);
+  if (!namingStyle) return;
+
+  const { isStyle, toStyle } = getStyleFunctions(namingStyle);
+  const found = await findNamingMismatches(
+    languageId,
+    filePath,
+    code,
+    namingStyle,
+    isStyle,
+    toStyle
+  );
+
+  if (found.length === 0) {
+    if (["python", "csharp"].includes(languageId) || filePath.endsWith(".cs")) {
+      return;
+    }
+    return vscode.window.showInformationMessage(
+      `✅ All names follow ${namingStyle}!`
+    );
+  }
+
+  await proceedWithRenaming(found, {
+    document,
+    fileUri,
+    code,
+    scheme,
+    previewContent,
+    namingStyle,
+  });
+}
+
+// ---- Helpers ----
+async function promptForNamingStyle(languageId, filePath) {
+  const suggested = detectPreferredStyleFromLanguage(languageId, filePath);
+  return await vscode.window.showQuickPick(
     ["🐍 snake_case", "🐫 camelCase", "🔠 PascalCase"],
     {
-      placeHolder: `Choose a naming convention (Suggested: ${suggestedStyle})`,
+      placeHolder: `Choose a naming convention (Suggested: ${suggested})`,
       ignoreFocusOut: true,
     }
   );
-  if (!namingStyle) return;
+}
 
-  const isStyle = namingStyle.includes("snake")
-    ? isSnakeCase
-    : namingStyle.includes("Pascal")
-    ? isPascalCase
-    : isCamelCase;
-
-  const toStyle = namingStyle.includes("snake")
-    ? toSnakeCase
-    : namingStyle.includes("Pascal")
-    ? toPascalCase
-    : toCamelCase;
-
-  const found = [];
-
-  function shouldSkipRename(name, style) {
-    const shortCommonNames = new Set([
-      "sum", "avg", "max", "min", "val", "num", "idx", "len", "row", "col", "tmp", "res", "obj"
-    ]);
-
-    const isSingleWord = /^[a-z]+$/.test(name); // no underscores or caps
-    const isShort = name.length <= 4;
-    const isCommon = shortCommonNames.has(name.toLowerCase());
-
-    // Skip these only for PascalCase
-    if (style.includes("Pascal")) {
-      return isSingleWord && isShort && isCommon;
-    }
-
-    // Still skip short/common one-word names for camelCase or snake_case
-    return isSingleWord && isShort && isCommon;
+function getStyleFunctions(namingStyle) {
+  if (namingStyle.includes("snake")) {
+    return { isStyle: isSnakeCase, toStyle: toSnakeCase };
+  } else if (namingStyle.includes("Pascal")) {
+    return { isStyle: isPascalCase, toStyle: toPascalCase };
+  } else {
+    return { isStyle: isCamelCase, toStyle: toCamelCase };
   }
+}
+
+function shouldSkipRename(name, style) {
+  const shortCommonNames = new Set([
+    "sum",
+    "avg",
+    "max",
+    "min",
+    "val",
+    "num",
+    "idx",
+    "len",
+    "row",
+    "col",
+    "tmp",
+    "res",
+    "obj",
+  ]);
+
+  const isSingleWord = /^[a-z]+$/.test(name);
+  const isShort = name.length <= 4;
+  const isCommon = shortCommonNames.has(name.toLowerCase());
+
+  return isSingleWord && isShort && isCommon;
+}
+
+async function findNamingMismatches(
+  languageId,
+  filePath,
+  code,
+  namingStyle,
+  isStyle,
+  toStyle
+) {
+  const found = [];
 
   if (languageId === "python") {
     const names = extractPythonNames(filePath);
-    if (!names || names.length === 0) return; // Exit if names couldn't be extracted
-
     for (const name of names) {
       const suggestion = toStyle(name);
-      if (!isStyle(name) && name !== suggestion && !shouldSkipRename(name, namingStyle)) {
+      if (
+        !isStyle(name) &&
+        name !== suggestion &&
+        !shouldSkipRename(name, namingStyle)
+      ) {
         found.push({ original: name, suggestion });
       }
     }
   } else if (languageId === "csharp" || filePath.endsWith(".cs")) {
     const names = extractCSharpNames(filePath);
-    if (!names || names.length === 0) return; // Exit if names couldn't be extracted
-
     for (const name of names) {
       const suggestion = toStyle(name);
-      if (!isStyle(name) && name !== suggestion && !shouldSkipRename(name, namingStyle)) {
+      if (
+        !isStyle(name) &&
+        name !== suggestion &&
+        !shouldSkipRename(name, namingStyle)
+      ) {
         found.push({ original: name, suggestion });
       }
     }
@@ -163,13 +216,13 @@ async function runFixNaming(context) {
         plugins: ["jsx", "typescript"],
       });
     } catch {
-      return vscode.window.showErrorMessage(
+      vscode.window.showErrorMessage(
         "❌ Could not parse the file. Check for syntax errors."
       );
+      return [];
     }
 
     const scopeStack = [];
-
     traverse(ast, {
       enter(path) {
         if (path.scope) {
@@ -182,53 +235,62 @@ async function runFixNaming(context) {
         }
       },
       VariableDeclarator(path) {
-        const name = path.node.id.name;
-        const suggestion = toStyle(name);
-        if (!isStyle(name) && name !== suggestion && !shouldSkipRename(name, namingStyle)) {
-          const allBindings = new Set([...scopeStack.flat()]);
-          if (!allBindings.has(suggestion)) {
-            found.push({ original: name, suggestion });
-          }
-        }
+        handleBinding(
+          path.node.id.name,
+          scopeStack,
+          namingStyle,
+          isStyle,
+          toStyle,
+          found
+        );
       },
       FunctionDeclaration(path) {
-        const name = path.node.id?.name;
-        if (!name) return;
-        const suggestion = toStyle(name);
-        if (!isStyle(name) && name !== suggestion && !shouldSkipRename(name, namingStyle)) {
-          const allBindings = new Set([...scopeStack.flat()]);
-          if (!allBindings.has(suggestion)) {
-            found.push({ original: name, suggestion });
-          }
+        if (path.node.id?.name) {
+          handleBinding(
+            path.node.id.name,
+            scopeStack,
+            namingStyle,
+            isStyle,
+            toStyle,
+            found
+          );
         }
       },
     });
   }
 
-  if (found.length === 0) {
-    return vscode.window.showInformationMessage(
-      `✅ All names follow ${namingStyle}!`
-    );
+  return found;
+}
+
+function handleBinding(name, scopeStack, namingStyle, isStyle, toStyle, found) {
+  const suggestion = toStyle(name);
+  if (
+    !isStyle(name) &&
+    name !== suggestion &&
+    !shouldSkipRename(name, namingStyle)
+  ) {
+    const allBindings = new Set([...scopeStack.flat()]);
+    if (!allBindings.has(suggestion)) {
+      found.push({ original: name, suggestion });
+    }
   }
+}
+
+async function proceedWithRenaming(found, context) {
+  const { document, fileUri, code, scheme, previewContent, namingStyle } =
+    context;
 
   const proceedMode = await vscode.window.showQuickPick(
     ["✅ Apply All", "🔍 Review Individually", "❌ Cancel"],
     { placeHolder: "How would you like to proceed with the suggestions?" }
   );
   if (!proceedMode || proceedMode.includes("Cancel")) return;
-  const applyAll = proceedMode.includes("Apply All");
 
   let currentCode = code;
   let totalApplied = 0;
 
-  if (applyAll) {
-    let updatedCode = currentCode;
-    for (const { original, suggestion } of found) {
-      updatedCode = updatedCode.replace(
-        new RegExp(`\\b${original}\\b`, "g"),
-        suggestion
-      );
-    }
+  if (proceedMode.includes("Apply All")) {
+    const updatedCode = applyAllChanges(currentCode, found);
 
     const previewUri = vscode.Uri.parse(
       `${scheme}:/refactor-preview/all-${namingStyle.replace(/\W/g, "")}.js`
@@ -254,27 +316,19 @@ async function runFixNaming(context) {
       return;
     }
 
-    try {
-      const edit = new vscode.WorkspaceEdit();
-      const fullRange = new vscode.Range(
-        document.positionAt(0),
-        document.positionAt(currentCode.length)
-      );
-      edit.replace(fileUri, fullRange, updatedCode);
-      await vscode.workspace.applyEdit(edit);
-      await document.save();
-      totalApplied = found.length;
-      await vscode.commands.executeCommand(
-        "workbench.action.closeActiveEditor"
-      );
-    } catch {
-      vscode.window.showErrorMessage("❌ Failed to apply changes.");
-    }
+    const success = await applyWorkspaceEdit(
+      document,
+      fileUri,
+      currentCode,
+      updatedCode
+    );
+    if (success) totalApplied = found.length;
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
   } else {
-    for (let i = 0; i < found.length; i++) {
-      const selection = found[i];
-      const updatedCode = currentCode.replace(
-        new RegExp(`\\b${selection.original}\\b`, "g"),
+    for (const selection of found) {
+      const updatedCode = applyChange(
+        currentCode,
+        selection.original,
         selection.suggestion
       );
 
@@ -298,24 +352,21 @@ async function runFixNaming(context) {
 
       if (!customName || customName === selection.original) continue;
 
-      const confirmedCode = currentCode.replace(
-        new RegExp(`\\b${selection.original}\\b`, "g"),
+      const confirmedCode = applyChange(
+        currentCode,
+        selection.original,
         customName
       );
 
-      try {
-        const edit = new vscode.WorkspaceEdit();
-        const fullRange = new vscode.Range(
-          document.positionAt(0),
-          document.positionAt(currentCode.length)
-        );
-        edit.replace(fileUri, fullRange, confirmedCode);
-        await vscode.workspace.applyEdit(edit);
-        await document.save();
+      const success = await applyWorkspaceEdit(
+        document,
+        fileUri,
+        currentCode,
+        confirmedCode
+      );
+      if (success) {
         currentCode = confirmedCode;
         totalApplied++;
-      } catch {
-        vscode.window.showErrorMessage("❌ Failed to apply changes.");
       }
     }
     await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
@@ -337,6 +388,38 @@ async function runFixNaming(context) {
       viewColumn: vscode.ViewColumn.One,
     });
   } catch {}
+}
+
+function applyAllChanges(code, found) {
+  let updatedCode = code;
+  for (const { original, suggestion } of found) {
+    updatedCode = updatedCode.replace(
+      new RegExp(`\\b${original}\\b`, "g"),
+      suggestion
+    );
+  }
+  return updatedCode;
+}
+
+function applyChange(code, original, suggestion) {
+  return code.replace(new RegExp(`\\b${original}\\b`, "g"), suggestion);
+}
+
+async function applyWorkspaceEdit(document, fileUri, oldCode, newCode) {
+  try {
+    const edit = new vscode.WorkspaceEdit();
+    const fullRange = new vscode.Range(
+      document.positionAt(0),
+      document.positionAt(oldCode.length)
+    );
+    edit.replace(fileUri, fullRange, newCode);
+    await vscode.workspace.applyEdit(edit);
+    await document.save();
+    return true;
+  } catch {
+    vscode.window.showErrorMessage("❌ Failed to apply changes.");
+    return false;
+  }
 }
 
 module.exports = { run: runFixNaming };
