@@ -5,7 +5,7 @@ const lintErrors = require("./features/lintErrors");
 
 function activate(context) {
   const disposable = vscode.commands.registerCommand(
-    "js-refactor.run",
+    "pwc-refactor.run",
     async () => {
       const feature = await vscode.window.showQuickPick(
         [
