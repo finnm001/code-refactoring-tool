@@ -61,7 +61,7 @@ function extractCSharpNames(filePath) {
 }
 
 async function runFixNaming(context) {
-  const scheme = "js-refactor-preview";
+  const scheme = "pwc-refactor-preview";
   const previewContent = new Map();
 
   context.subscriptions.push(
