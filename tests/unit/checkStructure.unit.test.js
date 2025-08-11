@@ -2,7 +2,6 @@ const { parse } = require("@babel/parser");
 const fs = require("fs");
 const path = require("path");
 
-// Mock vscode and puppeteer for non-analysis functions
 jest.mock("vscode", () => ({
   window: {
     showWarningMessage: jest.fn(),
@@ -33,7 +32,7 @@ jest.mock("vscode", () => ({
     ),
     createWebviewPanel: jest.fn(() => ({
       webview: {
-        onDidReceiveMessage: jest.fn(), // Fix for runCheckStructure test
+        onDidReceiveMessage: jest.fn(),
       },
     })),
   },
@@ -57,6 +56,7 @@ jest.mock("vscode", () => ({
   },
   TextEditorRevealType: { InCenter: 0 },
 }));
+
 jest.mock("puppeteer", () => ({
   launch: jest.fn(() =>
     Promise.resolve({
@@ -71,7 +71,6 @@ jest.mock("puppeteer", () => ({
   ),
 }));
 
-// Import after mocks
 const {
   analyseCodeStructure,
   extractFunctionMetrics,
@@ -85,7 +84,6 @@ const {
   createHtmlContent,
 } = require("../../features/checkStructure.js");
 
-// Helper to parse code and call analyseCodeStructure
 function analyse(code) {
   const ast = parse(code, {
     sourceType: "module",
@@ -208,7 +206,6 @@ describe("analyseCodeStructure", () => {
     expect(result.totalFunctions).toBe(0);
     expect(result.avgFnLength).toBe("0.0");
     expect(result.commentDensity).toBe("0.0");
-    // Should only add Low Comment Density if there is at least one function or comment
     expect(result.observations.length).toBe(0);
   });
 
@@ -220,7 +217,6 @@ describe("analyseCodeStructure", () => {
     const result = analyse(code);
     expect(result.totalFunctions).toBe(0);
     expect(parseFloat(result.commentDensity)).toBeGreaterThan(0);
-    // Accept both 0 or 1 depending on implementation, but check for the observation if present
     if (result.observations.length > 0) {
       expect(result.observations[0]).toContain("Low Comment Density");
     }
@@ -250,7 +246,7 @@ describe("extractFunctionMetrics", () => {
       },
     });
     expect(metrics.name).toBe("foo");
-    expect(metrics.length).toBeGreaterThanOrEqual(0); // Accept 0 or more
+    expect(metrics.length).toBeGreaterThanOrEqual(0);
     expect(metrics.params).toBe(2);
     expect(metrics.complexity).toBeGreaterThanOrEqual(1);
     expect(metrics.nesting).toBeGreaterThanOrEqual(0);
@@ -271,6 +267,7 @@ describe("checkTestability", () => {
     expect(testability.hasSideEffects).toBe(true);
     expect(testability.isPure).toBe(false);
   });
+
   it("detects pure function", () => {
     const ast = parse("function bar() { return 2; }", { sourceType: "module" });
     let testability;
@@ -381,25 +378,18 @@ describe("runCheckStructure", () => {
         uri: { fsPath: "test.js" },
       },
     };
-    vscode.window.showWarningMessage = jest.fn();
-    vscode.window.showErrorMessage = jest.fn();
-    vscode.window.showInformationMessage = jest.fn();
     vscode.window.createWebviewPanel = jest.fn(() => ({
       webview: {
         onDidReceiveMessage: jest.fn(),
       },
     }));
     vscode.workspace.openTextDocument = jest.fn(() =>
-      Promise.resolve({
-        uri: { fsPath: "test.js" },
-      })
+      Promise.resolve({ uri: { fsPath: "test.js" } })
     );
     await runCheckStructure();
     expect(vscode.window.createWebviewPanel).toHaveBeenCalled();
   });
-});
 
-describe("runCheckStructure", () => {
   it("shows warning if no active editor", async () => {
     const vscode = require("vscode");
     vscode.window.activeTextEditor = undefined;
@@ -433,7 +423,7 @@ describe("runCheckStructure", () => {
         isUntitled: false,
         isDirty: false,
         save: jest.fn(),
-        getText: jest.fn(() => "function {"), // invalid code
+        getText: jest.fn(() => "function {"),
         uri: { fsPath: "test.js" },
       },
     };
@@ -442,9 +432,7 @@ describe("runCheckStructure", () => {
       "❌ Could not parse the file. Check for syntax errors."
     );
   });
-});
 
-describe("runCheckStructure", () => {
   it("returns if user cancels save on dirty file", async () => {
     const vscode = require("vscode");
     vscode.window.activeTextEditor = {
@@ -462,7 +450,6 @@ describe("runCheckStructure", () => {
     vscode.window.createWebviewPanel.mockClear();
     vscode.window.showErrorMessage.mockClear();
     await runCheckStructure();
-    // Should not call createWebviewPanel or showErrorMessage
     expect(vscode.window.createWebviewPanel).not.toHaveBeenCalled();
     expect(vscode.window.showErrorMessage).not.toHaveBeenCalled();
   });
@@ -482,9 +469,7 @@ describe("exportPdf", () => {
     fs.existsSync.mockRestore();
     fs.mkdirSync.mockRestore();
   });
-});
 
-describe("exportPdf", () => {
   it("shows error if puppeteer fails", async () => {
     const vscode = require("vscode");
     const html = "<html></html>";
@@ -499,9 +484,7 @@ describe("exportPdf", () => {
     );
     require("puppeteer").launch = originalLaunch;
   });
-});
 
-describe("exportPdf", () => {
   it("does not throw if reportsDir already exists", async () => {
     const vscode = require("vscode");
     const html = "<html></html>";
@@ -532,9 +515,7 @@ describe("createHtmlContent", () => {
     const html = createHtmlContent(fileUri, results, 0);
     expect(html).toContain("<li>None</li>");
   });
-});
 
-describe("createHtmlContent", () => {
   it("renders <li>None</li> for each empty section", () => {
     const fileUri = { fsPath: "test.js" };
     const results = {
