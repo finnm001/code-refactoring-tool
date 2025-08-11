@@ -5,6 +5,19 @@ const fs = require("fs");
 const path = require("path");
 const puppeteer = require("puppeteer");
 
+// ---- Config Constants ----
+const PARSER_OPTIONS = {
+  sourceType: "module",
+  plugins: ["jsx", "typescript"],
+  ranges: true,
+  tokens: true,
+  errorRecovery: true,
+  attachComment: true,
+};
+
+const SIDE_EFFECT_CALLS = ["console", "setTimeout", "setInterval", "fetch"];
+
+// ---- Main Command ----
 async function runCheckStructure() {
   const editor = vscode.window.activeTextEditor;
   if (!editor) return vscode.window.showWarningMessage("❌ No active file");
@@ -14,20 +27,20 @@ async function runCheckStructure() {
 
   if (document.isUntitled)
     return vscode.window.showErrorMessage("❌ Please save the file first.");
-  if (
-    document.isDirty &&
-    (await promptSaveChanges(document)) !== "Save and Continue"
-  )
-    return;
 
-  await document.save();
+  if (document.isDirty) {
+    const userChoice = await promptSaveChanges(document);
+    if (userChoice !== "Save and Continue") return;
+    await document.save();
+  }
+
   const code = document.getText();
   const lines = code.split("\n").length;
 
   let ast;
   try {
     ast = parseCodeToAST(code);
-  } catch (err) {
+  } catch {
     return vscode.window.showErrorMessage(
       "❌ Could not parse the file. Check for syntax errors."
     );
@@ -39,6 +52,7 @@ async function runCheckStructure() {
   handlePanelMessages(panel, fileUri, analysisResults, lines);
 }
 
+// ---- UI Helpers ----
 async function promptSaveChanges(document) {
   return await vscode.window.showInformationMessage(
     "This file has unsaved changes. Save before continuing?",
@@ -47,44 +61,66 @@ async function promptSaveChanges(document) {
   );
 }
 
-function parseCodeToAST(code) {
-  return parser.parse(code, {
-    sourceType: "module",
-    plugins: ["jsx", "typescript"],
-    ranges: true,
-    tokens: true,
-    errorRecovery: true,
-    attachComment: true,
+function createWebviewPanel(fileUri, htmlContent) {
+  const panel = vscode.window.createWebviewPanel(
+    "structureReport",
+    `Structure Report: ${path.basename(fileUri.fsPath)}`,
+    vscode.ViewColumn.Beside,
+    { enableScripts: true }
+  );
+  panel.webview.html = htmlContent;
+  return panel;
+}
+
+function handlePanelMessages(panel, fileUri, results, lines) {
+  panel.webview.onDidReceiveMessage(async (message) => {
+    if (message.type === "exportPdf") {
+      const html = createHtmlContent(fileUri, results, lines);
+      await exportPdf(fileUri, html);
+    }
+    if (message.type === "jumpTo") {
+      await jumpToLine(fileUri, message.line);
+    }
   });
 }
 
-async function exportPdf(fileUri, htmlContent) {
-  const workspacePath =
-    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || __dirname;
-
-  const reportsDir = path.join(workspacePath, "structure-reports");
-
-  // Ensure the directory exists
-  if (!fs.existsSync(reportsDir)) {
-    fs.mkdirSync(reportsDir, { recursive: true });
-  }
-
-  const pdfPath = path.join(
-    reportsDir,
-    `${path.basename(fileUri.fsPath, ".js")}_StructureReport.pdf`
+async function jumpToLine(fileUri, line) {
+  const doc = await vscode.workspace.openTextDocument(fileUri);
+  const editor = await vscode.window.showTextDocument(
+    doc,
+    vscode.ViewColumn.One
   );
+  const pos = new vscode.Position(line - 1, 0);
+  editor.selection = new vscode.Selection(pos, pos);
+  editor.revealRange(
+    new vscode.Range(pos, pos),
+    vscode.TextEditorRevealType.InCenter
+  );
+}
 
-  try {
-    const browser = await puppeteer.launch({ headless: true });
-    const page = await browser.newPage();
-    await page.setContent(htmlContent, { waitUntil: "networkidle0" });
-    await page.pdf({ path: pdfPath, format: "A4", printBackground: true });
-    await browser.close();
+// ---- Parsing & Analysis ----
+function parseCodeToAST(code) {
+  return parser.parse(code, PARSER_OPTIONS);
+}
 
-    vscode.window.showInformationMessage(`📄 PDF saved to: ${pdfPath}`);
-  } catch (err) {
-    vscode.window.showErrorMessage("❌ Failed to generate PDF: " + err.message);
-  }
+function analyseCodeStructure(ast, code, lines) {
+  const functions = [];
+  const undocumented = [];
+
+  traverse(ast, {
+    FunctionDeclaration(path) {
+      const metrics = extractFunctionMetrics(path);
+      const testability = checkTestability(path);
+      const isDocumented = (path.node.leadingComments || []).some((c) =>
+        c.value.startsWith("*")
+      );
+      functions.push({ ...metrics, ...testability, documented: isDocumented });
+      if (!isDocumented)
+        undocumented.push({ name: metrics.name, line: metrics.start });
+    },
+  });
+
+  return computeStructureMetrics(functions, code, lines, undocumented);
 }
 
 function extractFunctionMetrics(path) {
@@ -99,26 +135,10 @@ function extractFunctionMetrics(path) {
 
   path.traverse({
     enter(subPath) {
-      if (
-        subPath.isIfStatement() ||
-        subPath.isForStatement() ||
-        subPath.isWhileStatement() ||
-        subPath.isBlockStatement() ||
-        subPath.isSwitchStatement() ||
-        subPath.isTryStatement()
-      ) {
+      if (isNestingNode(subPath)) {
         currentNesting++;
         nesting = Math.max(nesting, currentNesting);
-        // FIX: Increment complexity for each branch statement
-        if (
-          subPath.isIfStatement() ||
-          subPath.isForStatement() ||
-          subPath.isWhileStatement() ||
-          subPath.isSwitchStatement() ||
-          subPath.isTryStatement()
-        ) {
-          complexity++;
-        }
+        if (isComplexityIncreasingNode(subPath)) complexity++;
       }
       if (
         subPath.isLogicalExpression() ||
@@ -129,16 +149,7 @@ function extractFunctionMetrics(path) {
       }
     },
     exit(subPath) {
-      if (
-        subPath.isIfStatement() ||
-        subPath.isForStatement() ||
-        subPath.isWhileStatement() ||
-        subPath.isBlockStatement() ||
-        subPath.isSwitchStatement() ||
-        subPath.isTryStatement()
-      ) {
-        currentNesting--;
-      }
+      if (isNestingNode(subPath)) currentNesting--;
     },
   });
 
@@ -153,9 +164,7 @@ function checkTestability(path) {
     enter(subPath) {
       if (
         subPath.isCallExpression() &&
-        ["console", "setTimeout", "setInterval", "fetch"].includes(
-          subPath.node.callee?.object?.name
-        )
+        SIDE_EFFECT_CALLS.includes(subPath.node.callee?.object?.name)
       ) {
         hasSideEffects = true;
       }
@@ -166,23 +175,28 @@ function checkTestability(path) {
   return { hasSideEffects, isPure: hasReturn && !hasSideEffects };
 }
 
-function analyseCodeStructure(ast, code, lines) {
-  const functions = [];
-  const undocumented = [];
+function isNestingNode(subPath) {
+  return (
+    subPath.isIfStatement() ||
+    subPath.isForStatement() ||
+    subPath.isWhileStatement() ||
+    subPath.isBlockStatement() ||
+    subPath.isSwitchStatement() ||
+    subPath.isTryStatement()
+  );
+}
 
-  traverse(ast, {
-    FunctionDeclaration(path) {
-      const metrics = extractFunctionMetrics(path);
-      const testability = checkTestability(path);
-      const leading = path.node.leadingComments || [];
-      const isDocumented = leading.some((c) => c.value.startsWith("*"));
+function isComplexityIncreasingNode(subPath) {
+  return (
+    subPath.isIfStatement() ||
+    subPath.isForStatement() ||
+    subPath.isWhileStatement() ||
+    subPath.isSwitchStatement() ||
+    subPath.isTryStatement()
+  );
+}
 
-      functions.push({ ...metrics, ...testability, documented: isDocumented });
-      if (!isDocumented)
-        undocumented.push({ name: metrics.name, line: metrics.start });
-    },
-  });
-
+function computeStructureMetrics(functions, code, lines, undocumented) {
   const avgFnLength = functions.length
     ? (
         functions.reduce((sum, fn) => sum + fn.length, 0) / functions.length
@@ -201,9 +215,10 @@ function analyseCodeStructure(ast, code, lines) {
 
   const longFunctions = functions.filter((fn) => fn.length > 50);
   const highComplexity = functions.filter((fn) => fn.complexity > 8);
-  const untestable = functions.filter((fn, idx, arr) => {
-    return !fn.isPure && arr.findIndex((f) => f.name === fn.name) === idx;
-  });
+  const untestable = functions.filter(
+    (fn, idx, arr) =>
+      !fn.isPure && arr.findIndex((f) => f.name === fn.name) === idx
+  );
 
   const techDebtScore = Math.min(
     100,
@@ -218,85 +233,6 @@ function analyseCodeStructure(ast, code, lines) {
   );
   const healthScore = Math.max(0, 100 - techDebtScore);
 
-  const observations = [];
-
-  // 1. Documentation Gaps
-  if (undocumented.length > functions.length * 0.5) {
-    const percent = ((undocumented.length / functions.length) * 100).toFixed(0);
-    observations.push(
-      `<strong>Documentation Gaps:</strong> ${undocumented.length} of ${functions.length} functions lack documentation (${percent}%). Add JSDoc comments to clarify purpose, parameters, and return values.`
-    );
-  }
-
-  // 2. Long Functions
-  if (longFunctions.length > 0) {
-    const names = longFunctions
-      .map((f) => `<code>${f.name}</code> (${f.length} lines)`)
-      .join(", ");
-    observations.push(
-      `<strong>Length Concerns:</strong> ${names} ${
-        longFunctions.length > 1 ? "are" : "is"
-      } quite long. Consider decomposing into smaller, single-responsibility functions.`
-    );
-  }
-
-  // 3. High Complexity
-  if (highComplexity.length > 0) {
-    const names = highComplexity
-      .map(
-        (f) =>
-          `<code>${f.name}</code> (Complexity: <strong>${f.complexity}</strong>)`
-      )
-      .join(", ");
-    observations.push(
-      `<strong>Complex Logic:</strong> The following functions have high cyclomatic complexity: ${names}. This may impact readability and maintainability.`
-    );
-  }
-
-  // 4. Testability
-  if (untestable.length > 0) {
-    const names = untestable.map((f) => `<code>${f.name}</code>`).join(", ");
-    observations.push(
-      `<strong>Testability Issues:</strong> ${names} exhibit side effects (e.g., <code>console</code> output, <code>setTimeout</code>). Consider isolating side effects to improve testability.`
-    );
-  }
-
-  // 5. Redundancy
-  const functionNameMap = new Map();
-  functions.forEach((f) => {
-    const key = f.name.replace(/Again$/, ""); // crude dedup check
-    functionNameMap.set(key, (functionNameMap.get(key) || 0) + 1);
-  });
-  const redundantGroups = Array.from(functionNameMap.entries()).filter(
-    ([, count]) => count > 1
-  );
-  if (
-    redundantGroups.length > 0 ||
-    code.match(/for\s*\(let\s+[a-z]+\s*=\s*0;/g)?.length > 1
-  ) {
-    observations.push(
-      `<strong>Redundant Logic:</strong> Duplicate functions (e.g., ${redundantGroups
-        .map(([name]) => `<code>${name}</code>`)
-        .join(
-          ", "
-        )}) and repeated loop patterns were found. Consider consolidation to reduce code duplication.`
-    );
-  }
-
-  // 6. Comment Density
-  // FIX: Only add Low Comment Density if there is at least one function or comment in the code
-  if (
-    parseFloat(commentDensity) < 20 &&
-    (functions.length > 0 ||
-      code
-        .split("\n")
-        .some((l) => l.trim().startsWith("//") || l.trim().startsWith("/*")))
-  ) {
-    observations.push(
-      `<strong>Low Comment Density</strong> (<strong>${commentDensity}%</strong>): Minimal inline comments reduce clarity. Add explanations for non-trivial logic where needed.`
-    );
-  }
-
   return {
     totalFunctions: functions.length,
     avgFnLength,
@@ -308,46 +244,127 @@ function analyseCodeStructure(ast, code, lines) {
     highComplexity,
     untestable,
     undocumented,
-    observations,
+    observations: generateObservations(
+      functions,
+      undocumented,
+      commentDensity,
+      code
+    ),
   };
 }
 
-function createWebviewPanel(fileUri, htmlContent) {
-  const panel = vscode.window.createWebviewPanel(
-    "structureReport",
-    `Structure Report: ${path.basename(fileUri.fsPath)}`,
-    vscode.ViewColumn.Beside,
-    { enableScripts: true }
+// ---- Observations ----
+function generateObservations(functions, undocumented, commentDensity, code) {
+  const observations = [];
+
+  if (undocumented.length > functions.length * 0.5) {
+    observations.push(
+      `<strong>Documentation Gaps:</strong> ${undocumented.length} of ${
+        functions.length
+      } functions lack documentation (${(
+        (undocumented.length / functions.length) *
+        100
+      ).toFixed(0)}%). Add JSDoc comments.`
+    );
+  }
+
+  const longFunctions = functions.filter((fn) => fn.length > 50);
+  if (longFunctions.length > 0) {
+    const names = longFunctions
+      .map((f) => `<code>${f.name}</code> (${f.length} lines)`)
+      .join(", ");
+    observations.push(
+      `<strong>Length Concerns:</strong> ${names} are quite long. Consider decomposing them.`
+    );
+  }
+
+  const highComplexity = functions.filter((fn) => fn.complexity > 8);
+  if (highComplexity.length > 0) {
+    const names = highComplexity
+      .map(
+        (f) =>
+          `<code>${f.name}</code> (Complexity: <strong>${f.complexity}</strong>)`
+      )
+      .join(", ");
+    observations.push(
+      `<strong>Complex Logic:</strong> ${names}. Consider simplifying logic.`
+    );
+  }
+
+  const untestable = functions.filter((fn) => !fn.isPure);
+  if (untestable.length > 0) {
+    const names = untestable.map((f) => `<code>${f.name}</code>`).join(", ");
+    observations.push(
+      `<strong>Testability Issues:</strong> ${names} have side effects. Isolate side effects for better testing.`
+    );
+  }
+
+  const functionNameMap = new Map();
+  functions.forEach((f) => {
+    const key = f.name.replace(/Again$/, "");
+    functionNameMap.set(key, (functionNameMap.get(key) || 0) + 1);
+  });
+  const redundantGroups = Array.from(functionNameMap.entries()).filter(
+    ([, count]) => count > 1
   );
-  panel.webview.html = htmlContent;
-  return panel;
+  if (
+    redundantGroups.length > 0 ||
+    code.match(/for\s*\(let\s+[a-z]+\s*=\s*0;/g)?.length > 1
+  ) {
+    observations.push(
+      `<strong>Redundant Logic:</strong> Duplicates found in functions: ${redundantGroups
+        .map(([name]) => `<code>${name}</code>`)
+        .join(", ")}. Consider consolidating them.`
+    );
+  }
+
+  if (
+    parseFloat(commentDensity) < 20 &&
+    (functions.length > 0 ||
+      code
+        .split("\n")
+        .some((l) => l.trim().startsWith("//") || l.trim().startsWith("/*")))
+  ) {
+    observations.push(
+      `<strong>Low Comment Density</strong> (<strong>${commentDensity}%</strong>): Consider adding inline comments for clarity.`
+    );
+  }
+
+  return observations;
 }
 
-function handlePanelMessages(panel, fileUri, results, lines) {
-  panel.webview.onDidReceiveMessage(
-    async (message) => {
-      if (message.type === "exportPdf") {
-        const html = createHtmlContent(fileUri, results, lines);
-        await exportPdf(fileUri, html);
-      }
+// ---- Export PDF ----
+async function exportPdf(fileUri, htmlContent) {
+  const workspacePath =
+    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || __dirname;
+  const reportsDir = path.join(workspacePath, "structure-reports");
 
-      if (message.type === "jumpTo") {
-        const doc = await vscode.workspace.openTextDocument(fileUri);
-        const editor = await vscode.window.showTextDocument(
-          doc,
-          vscode.ViewColumn.One
-        );
-        const pos = new vscode.Position(message.line - 1, 0);
-        editor.selection = new vscode.Selection(pos, pos);
-        editor.revealRange(
-          new vscode.Range(pos, pos),
-          vscode.TextEditorRevealType.InCenter
-        );
-      }
-    },
-    undefined,
-    []
+  if (!fs.existsSync(reportsDir)) {
+    fs.mkdirSync(reportsDir, { recursive: true });
+  }
+
+  const pdfPath = path.join(
+    reportsDir,
+    `${path.basename(fileUri.fsPath, ".js")}_StructureReport.pdf`
   );
+
+  try {
+    const browser = await puppeteer.launch({ headless: true });
+    const page = await browser.newPage();
+    await page.setContent(htmlContent, { waitUntil: "networkidle0" });
+    await page.evaluate(() => {
+      if (document.activeElement) {
+        document.activeElement.blur();
+      }
+      window.scrollTo(0, 0);
+    });
+    await page.pdf({ path: pdfPath, format: "A4", printBackground: true });
+    await browser.close();
+
+    vscode.window.showInformationMessage(`📄 PDF saved to: ${pdfPath}`);
+  } catch (err) {
+    vscode.window.showErrorMessage("❌ Failed to generate PDF: " + err.message);
+  }
 }
 
 function createHtmlContent(fileUri, results, lines) {
